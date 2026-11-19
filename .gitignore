@@ -1,0 +1,5 @@
+RED/node_modules/
+RED/dist/
+RED/*.tsbuildinfo
+RED/.github/
+.DS_Store
