@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111619" />
+    <title>R.E.D. Monster Asset Preview</title>
+  </head>
+  <body>
+    <main class="preview">
+      <canvas id="monster-canvas" aria-label="Interactive 3D monster model preview"></canvas>
+      <aside class="preview-panel">
+        <header>
+          <a href="./" aria-label="Return to R.E.D.">R.E.D.</a>
+          <span>LOCAL ASSET PREVIEW</span>
+        </header>
+
+        <label class="field-label" for="model-select">MONSTER MODEL</label>
+        <select id="model-select"></select>
+        <p id="load-status" role="status" aria-live="polite">Loading model...</p>
+
+        <section id="model-report" class="model-report" aria-live="polite"></section>
+
+        <details class="rig-details">
+          <summary>Materials, skeleton and clips</summary>
+          <pre id="model-details">Select a model to inspect its data.</pre>
+        </details>
+
+        <div class="preview-controls">
+          <label for="height-control">
+            Display height <output id="height-value">1.40 m</output>
+          </label>
+          <input id="height-control" type="range" min="0.5" max="8" step="0.05" value="1.4" />
+          <label for="yaw-control">
+            Preview yaw <output id="yaw-value">0 deg</output>
+          </label>
+          <input id="yaw-control" type="range" min="-180" max="180" step="1" value="0" />
+          <label class="checkbox-label" for="skeleton-control">
+            <input id="skeleton-control" type="checkbox" />
+            Show skeleton
+          </label>
+          <label class="field-label" for="clip-select">EMBEDDED ANIMATION</label>
+          <select id="clip-select" disabled>
+            <option>No animation clips in this model</option>
+          </select>
+          <button id="reset-view" type="button">Reset camera and model</button>
+        </div>
+
+        <p class="instructions">Drag to orbit. Scroll to zoom. No animation is synthesized for static models.</p>
+        <p class="local-only">Preview assets are local test copies; the game player and gameplay spawns are unchanged.</p>
+      </aside>
+    </main>
+    <script type="module" src="./src/monster-preview.ts"></script>
+  </body>
+</html>

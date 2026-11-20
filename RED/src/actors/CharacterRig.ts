@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Race } from '../core/types';
-import { actorToonMaterial, organicForm } from './ActorGeometry';
+import { actorMaterial, consolidateActorMeshes, longitudinalLoft, organicForm, sweptTube, verticalLoft } from './ActorGeometry';
 
 export interface CharacterRig {
   model: THREE.Group;
@@ -24,20 +24,17 @@ interface RaceStyle {
   skin: number;
   cloth: number;
   armor: number;
+  armorSurface: 'iron' | 'steel';
   hair: number;
   cape: number;
 }
 
 const RACE_STYLE: Record<Race, RaceStyle> = {
-  Human: { height: 1, width: 1, skin: 0xb77e58, cloth: 0x40584b, armor: 0x777d78, hair: 0x392b24, cape: 0x263e38 },
-  Elf: { height: 1.07, width: 0.88, skin: 0xb98d72, cloth: 0x345348, armor: 0x9b8659, hair: 0x343b37, cape: 0x263d46 },
-  Dwarf: { height: 0.78, width: 1.2, skin: 0xa96d4d, cloth: 0x68434a, armor: 0x74746b, hair: 0x6a3827, cape: 0x4c2930 },
-  Beastkin: { height: 1.01, width: 1.04, skin: 0x8e684d, cloth: 0x635d38, armor: 0x786d50, hair: 0x574332, cape: 0x51412b },
+  Human: { height: 1, width: 1, skin: 0xb77e58, cloth: 0x40584b, armor: 0x777d78, armorSurface: 'steel', hair: 0x392b24, cape: 0x263e38 },
+  Elf: { height: 1.07, width: 0.88, skin: 0xb98d72, cloth: 0x345348, armor: 0x9b8659, armorSurface: 'steel', hair: 0x343b37, cape: 0x263d46 },
+  Dwarf: { height: 0.78, width: 1.2, skin: 0xa96d4d, cloth: 0x68434a, armor: 0x74746b, armorSurface: 'iron', hair: 0x6a3827, cape: 0x4c2930 },
+  Beastkin: { height: 1.01, width: 1.04, skin: 0x8e684d, cloth: 0x635d38, armor: 0x786d50, armorSurface: 'iron', hair: 0x574332, cape: 0x51412b },
 };
-
-function metalMaterial(color: number, roughness: number, metalness: number): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({ color, roughness, metalness });
-}
 
 function mesh(
   geometry: THREE.BufferGeometry,
@@ -64,6 +61,46 @@ function plateShape(width: number, height: number): THREE.Shape {
   return shape;
 }
 
+function curvedPlateGeometry(width: number, height: number, depth: number, curvature: number): THREE.BufferGeometry {
+  const geometry = new THREE.ExtrudeGeometry(plateShape(width, height), {
+    depth,
+    bevelEnabled: true,
+    bevelSegments: 3,
+    steps: 1,
+    bevelSize: 0.018,
+    bevelThickness: 0.015,
+    curveSegments: 10,
+  });
+  const positions = geometry.getAttribute('position');
+  for (let index = 0; index < positions.count; index++) {
+    const x = positions.getX(index);
+    const across = THREE.MathUtils.clamp(x / (width * 0.5), -1, 1);
+    positions.setZ(index, positions.getZ(index) + curvature * (1 - across * across));
+  }
+  positions.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function pouchGeometry(width: number, height: number): THREE.BufferGeometry {
+  const shape = new THREE.Shape();
+  shape.moveTo(-width * 0.42, height * 0.48);
+  shape.quadraticCurveTo(0, height * 0.56, width * 0.42, height * 0.48);
+  shape.lineTo(width * 0.5, -height * 0.22);
+  shape.quadraticCurveTo(width * 0.48, -height * 0.5, 0, -height * 0.5);
+  shape.quadraticCurveTo(-width * 0.48, -height * 0.5, -width * 0.5, -height * 0.22);
+  shape.closePath();
+  return new THREE.ExtrudeGeometry(shape, {
+    depth: 0.065,
+    bevelEnabled: true,
+    bevelSegments: 3,
+    steps: 1,
+    bevelSize: 0.012,
+    bevelThickness: 0.012,
+    curveSegments: 8,
+  });
+}
+
 export function createCharacterRig(race: Race): CharacterRig {
   const style = RACE_STYLE[race];
   const model = new THREE.Group();
@@ -71,18 +108,23 @@ export function createCharacterRig(race: Race): CharacterRig {
   rig.scale.set(style.width, style.height, style.width);
   model.add(rig);
 
-  const skin = actorToonMaterial(style.skin);
-  const cloth = actorToonMaterial(style.cloth);
-  const leather = actorToonMaterial(race === 'Elf' ? 0x463d2c : 0x3e3024);
-  const armor = metalMaterial(style.armor, 0.38, 0.62);
-  const trim = metalMaterial(race === 'Dwarf' ? 0xb48848 : 0xb59a62, 0.42, 0.55);
-  const hair = actorToonMaterial(style.hair);
-  const dark = actorToonMaterial(0x261d1a);
-  const eye = actorToonMaterial(0xe5d6b8);
-  const iris = actorToonMaterial(race === 'Elf' ? 0x76bd7b : race === 'Beastkin' ? 0xc28b46 : race === 'Dwarf' ? 0x9b6239 : 0x76513a);
-  const pupil = actorToonMaterial(0x11110f);
+  const skin = actorMaterial(style.skin, 'skin');
+  const cloth = actorMaterial(style.cloth, 'cloth');
+  const leather = actorMaterial(race === 'Elf' ? 0x463d2c : 0x3e3024, 'leather');
+  const glove = actorMaterial(race === 'Elf' ? 0x342d25 : 0x30271f, 'leather');
+  const armor = actorMaterial(style.armor, style.armorSurface);
+  const trim = actorMaterial(race === 'Dwarf' ? 0xb48848 : 0xb59a62, 'bronze');
+  const fur = actorMaterial(race === 'Dwarf' ? 0x5b4835 : 0x756451, 'fur');
+  const hair = actorMaterial(style.hair, 'hair');
+  const dark = actorMaterial(0x261d1a, 'leather');
+  const eye = actorMaterial(0xe5d6b8, 'bone');
+  const iris = new THREE.MeshStandardMaterial({
+    color: race === 'Elf' ? 0x76bd7b : race === 'Beastkin' ? 0xc28b46 : race === 'Dwarf' ? 0x9b6239 : 0x76513a,
+    roughness: 0.3,
+  });
+  const pupil = new THREE.MeshStandardMaterial({ color: 0x11110f, roughness: 0.18 });
   const glint = new THREE.MeshBasicMaterial({ color: 0xfff5dc });
-  const lip = actorToonMaterial(race === 'Beastkin' ? 0x352723 : 0x70483b);
+  const lip = actorMaterial(race === 'Beastkin' ? 0x352723 : 0x70483b, 'skin');
   let tailBone: THREE.Bone | null = null;
   let capeBone: THREE.Bone | null = null;
 
@@ -90,20 +132,43 @@ export function createCharacterRig(race: Race): CharacterRig {
   pelvis.name = 'Hips';
   pelvis.position.y = 0.88;
   rig.add(pelvis);
-  mesh(organicForm(0.33, 0.28, 0.18, [0.74, 0.96, 1, 0.86, 0.62]), cloth, pelvis, new THREE.Vector3(0, 0.01, 0));
+  mesh(verticalLoft([
+    { position: -0.17, width: 0.16, depth: 0.1 },
+    { position: -0.12, width: 0.23, depth: 0.14 },
+    { position: -0.02, width: 0.27, depth: 0.16 },
+    { position: 0.09, width: 0.24, depth: 0.145 },
+    { position: 0.16, width: 0.18, depth: 0.12 },
+  ]), cloth, pelvis, new THREE.Vector3(0, 0.01, 0));
 
   const spine = new THREE.Bone();
   spine.name = 'Spine';
   spine.position.y = 0.12;
   pelvis.add(spine);
-  mesh(organicForm(0.67, 0.28, 0.18, [0.67, 0.9, 1, 0.93, 0.82, 0.67]), cloth, spine, new THREE.Vector3(0, 0.22, 0));
+  mesh(verticalLoft([
+    { position: -0.11, width: 0.17, depth: 0.105, offset: -0.005 },
+    { position: -0.02, width: 0.22, depth: 0.13, offset: 0 },
+    { position: 0.1, width: 0.245, depth: 0.145, offset: 0.005 },
+    { position: 0.24, width: 0.265, depth: 0.15, offset: 0.005 },
+    { position: 0.36, width: 0.235, depth: 0.135, offset: 0 },
+    { position: 0.47, width: 0.17, depth: 0.11, offset: 0 },
+    { position: 0.53, width: 0.11, depth: 0.085, offset: 0 },
+  ]), cloth, spine, new THREE.Vector3(0, 0.22, 0));
   const chestPlate = mesh(
-    new THREE.ExtrudeGeometry(plateShape(0.54, 0.64), { depth: 0.065, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.025, bevelThickness: 0.025 }),
+    curvedPlateGeometry(0.54, 0.64, 0.065, 0.075),
     armor,
     spine,
     new THREE.Vector3(0, 0.22, 0.175),
   );
   chestPlate.rotation.x = -0.08;
+  for (let segment = 0; segment < 3; segment++) {
+    const fauld = mesh(
+      curvedPlateGeometry(0.46 - segment * 0.035, 0.12, 0.035, 0.052),
+      armor,
+      spine,
+      new THREE.Vector3(0, -0.06 - segment * 0.105, 0.205),
+    );
+    fauld.rotation.x = -0.06;
+  }
   mesh(new THREE.TorusGeometry(0.21, 0.018, 6, 24), trim, spine, new THREE.Vector3(0, 0.22, 0.251)).scale.set(1, 1.1, 0.35);
   const chestSigil = mesh(new THREE.BoxGeometry(0.075, 0.1, 0.018), trim, spine, new THREE.Vector3(0, 0.22, 0.26));
   chestSigil.rotation.z = Math.PI / 4;
@@ -114,7 +179,7 @@ export function createCharacterRig(race: Race): CharacterRig {
       mesh(new THREE.SphereGeometry(0.016, 8, 6), trim, spine, new THREE.Vector3(side * (0.105 + y * 0.42), 0.23 + y, 0.281));
     }
   }
-  const collar = mesh(new THREE.TorusGeometry(0.105, 0.025, 7, 18), leather, spine, new THREE.Vector3(0, 0.48, 0));
+  const collar = mesh(new THREE.TorusGeometry(0.16, 0.045, 9, 28), fur, spine, new THREE.Vector3(0, 0.48, 0));
   collar.rotation.x = Math.PI / 2;
   const backEquipmentSocket = new THREE.Bone();
   backEquipmentSocket.name = 'Equipment_Back';
@@ -125,6 +190,7 @@ export function createCharacterRig(race: Race): CharacterRig {
   capeBone.position.set(0, 0.38, -0.2);
   spine.add(capeBone);
   const capePositions: number[] = [];
+  const capeUvs: number[] = [];
   const capeIndices: number[] = [];
   const capeRows = 8;
   const capeColumns = 6;
@@ -138,6 +204,7 @@ export function createCharacterRig(race: Race): CharacterRig {
         -t * 0.82,
         -t * 0.11 - Math.cos(across * Math.PI * 3) * Math.sin(t * Math.PI) * 0.025,
       );
+      capeUvs.push(column / capeColumns, t);
       if (row < capeRows && column < capeColumns) {
         const current = row * (capeColumns + 1) + column;
         const next = current + capeColumns + 1;
@@ -147,9 +214,10 @@ export function createCharacterRig(race: Race): CharacterRig {
   }
   const capeGeometry = new THREE.BufferGeometry();
   capeGeometry.setAttribute('position', new THREE.Float32BufferAttribute(capePositions, 3));
+  capeGeometry.setAttribute('uv', new THREE.Float32BufferAttribute(capeUvs, 2));
   capeGeometry.setIndex(capeIndices);
   capeGeometry.computeVertexNormals();
-  const capeMaterial = actorToonMaterial(style.cape);
+  const capeMaterial = actorMaterial(style.cape, 'cloth');
   capeMaterial.side = THREE.DoubleSide;
   const cape = new THREE.Mesh(capeGeometry, capeMaterial);
   cape.castShadow = true;
@@ -161,33 +229,79 @@ export function createCharacterRig(race: Race): CharacterRig {
   const buckle = mesh(new THREE.BoxGeometry(0.11, 0.09, 0.035), trim, pelvis, new THREE.Vector3(0, 0.13, 0.245));
   buckle.rotation.z = Math.PI / 4;
   for (const side of [-1, 1]) {
-    const pouch = mesh(new THREE.BoxGeometry(0.105, 0.12, 0.075), leather, pelvis, new THREE.Vector3(side * 0.22, 0.06, 0.2));
+    const pouch = mesh(pouchGeometry(0.12, 0.16), leather, pelvis, new THREE.Vector3(side * 0.22, 0.04, 0.2));
     pouch.rotation.z = side * -0.1;
-    mesh(new THREE.BoxGeometry(0.11, 0.018, 0.012), trim, pelvis, new THREE.Vector3(side * 0.22, 0.12, 0.24));
+    mesh(new THREE.BoxGeometry(0.12, 0.018, 0.018), trim, pelvis, new THREE.Vector3(side * 0.22, 0.11, 0.255));
   }
   for (const side of [-1, 1]) {
-    mesh(new THREE.BoxGeometry(0.12, 0.44, 0.28), cloth, pelvis, new THREE.Vector3(side * 0.16, -0.17, 0.015));
-    mesh(new THREE.BoxGeometry(0.035, 0.42, 0.035), trim, pelvis, new THREE.Vector3(side * 0.16, -0.17, 0.17));
+    const panel = new THREE.Shape();
+    panel.moveTo(-0.07, 0.16);
+    panel.quadraticCurveTo(0, 0.2, 0.07, 0.16);
+    panel.lineTo(0.09, -0.17);
+    panel.quadraticCurveTo(0, -0.23, -0.09, -0.17);
+    panel.closePath();
+    const skirt = mesh(new THREE.ExtrudeGeometry(panel, {
+      depth: 0.035,
+      bevelEnabled: true,
+      bevelSegments: 2,
+      steps: 1,
+      bevelSize: 0.008,
+      bevelThickness: 0.008,
+    }), cloth, pelvis, new THREE.Vector3(side * 0.16, -0.17, 0.14));
+    skirt.rotation.y = side * -0.12;
+    const hem = mesh(sweptTube([
+      new THREE.Vector3(side * 0.16 - 0.08, -0.36, 0.18),
+      new THREE.Vector3(side * 0.16, -0.4, 0.19),
+      new THREE.Vector3(side * 0.16 + 0.08, -0.36, 0.18),
+    ], 0.006, 14, 5), trim, pelvis, new THREE.Vector3());
+    hem.visible = true;
   }
 
   const neck = new THREE.Bone();
   neck.name = 'Neck';
   neck.position.set(0, 0.59, 0);
   spine.add(neck);
-  mesh(new THREE.CylinderGeometry(0.085, 0.11, 0.18, 12), skin, neck, new THREE.Vector3(0, 0.01, 0));
+  mesh(verticalLoft([
+    { position: -0.09, width: 0.09, depth: 0.085 },
+    { position: -0.03, width: 0.105, depth: 0.095 },
+    { position: 0.06, width: 0.085, depth: 0.08 },
+    { position: 0.13, width: 0.075, depth: 0.07 },
+  ]), skin, neck, new THREE.Vector3(0, 0.01, 0));
   const head = new THREE.Bone();
   head.name = 'Head';
   head.position.y = 0.13;
   neck.add(head);
-  const skull = mesh(new THREE.SphereGeometry(0.19, 24, 18), skin, head, new THREE.Vector3(0, 0.03, 0));
-  skull.scale.set(0.92, 1.08, 0.92);
-  mesh(organicForm(0.15, 0.15, 0.135, [0.15, 0.72, 1, 0.94, 0.63]), skin, head, new THREE.Vector3(0, -0.07, 0.11));
-  mesh(new THREE.SphereGeometry(0.055, 14, 10), skin, head, new THREE.Vector3(0, -0.005, 0.18));
+  mesh(verticalLoft([
+    { position: -0.16, width: 0.055, depth: 0.07, offset: 0.055 },
+    { position: -0.12, width: 0.105, depth: 0.095, offset: 0.035 },
+    { position: -0.045, width: 0.145, depth: 0.12, offset: 0.02 },
+    { position: 0.045, width: 0.16, depth: 0.13, offset: 0.005 },
+    { position: 0.13, width: 0.135, depth: 0.115, offset: -0.005 },
+    { position: 0.2, width: 0.07, depth: 0.075, offset: -0.015 },
+  ]), skin, head, new THREE.Vector3(0, 0.02, 0));
+  mesh(verticalLoft([
+    { position: -0.075, width: 0.025, depth: 0.027, offset: 0.135 },
+    { position: -0.015, width: 0.029, depth: 0.035, offset: 0.13 },
+    { position: 0.065, width: 0.025, depth: 0.03, offset: 0.105 },
+  ]), skin, head, new THREE.Vector3(0, 0, 0));
+  mesh(longitudinalLoft([
+    { position: 0.13, width: 0.026, depth: 0.026, offset: -0.015 },
+    { position: 0.17, width: 0.038, depth: 0.033, offset: -0.035 },
+    { position: 0.22, width: 0.042, depth: 0.027, offset: -0.065 },
+  ]), skin, head, new THREE.Vector3());
   if (race === 'Beastkin') {
-    const muzzle = mesh(organicForm(0.11, 0.105, 0.12, [0.35, 0.9, 1, 0.68]), actorToonMaterial(0x806454), head, new THREE.Vector3(0, -0.045, 0.205));
-    muzzle.rotation.x = Math.PI / 2;
+    mesh(longitudinalLoft([
+      { position: 0.17, width: 0.065, depth: 0.055, offset: -0.07 },
+      { position: 0.23, width: 0.082, depth: 0.063, offset: -0.09 },
+      { position: 0.31, width: 0.06, depth: 0.045, offset: -0.105 },
+    ]), actorMaterial(0x806454, 'fur'), head, new THREE.Vector3());
   }
-  mesh(new THREE.BoxGeometry(0.11, 0.014, 0.012), lip, head, new THREE.Vector3(0, -0.105, race === 'Beastkin' ? 0.28 : 0.205));
+  const mouthZ = race === 'Beastkin' ? 0.292 : 0.205;
+  mesh(sweptTube([
+    new THREE.Vector3(-0.05, -0.105, mouthZ - 0.015),
+    new THREE.Vector3(0, -0.114, mouthZ),
+    new THREE.Vector3(0.05, -0.105, mouthZ - 0.015),
+  ], 0.006, 12, 6), lip, head, new THREE.Vector3());
   for (const side of [-1, 1]) {
     const nostril = mesh(new THREE.SphereGeometry(0.009, 8, 6), dark, head, new THREE.Vector3(side * 0.019, 0.004, race === 'Beastkin' ? 0.292 : 0.218));
     nostril.scale.set(1, 0.7, 0.65);
@@ -201,13 +315,17 @@ export function createCharacterRig(race: Race): CharacterRig {
     mesh(new THREE.SphereGeometry(0.007, 8, 6), glint, head, new THREE.Vector3(side * 0.082, 0.068, 0.216));
     const brow = mesh(new THREE.CapsuleGeometry(0.016, 0.075, 3, 7), hair, head, new THREE.Vector3(side * 0.075, 0.103, 0.159));
     brow.rotation.z = side * -0.12;
-    const ear = mesh(new THREE.SphereGeometry(0.055, 10, 8), skin, head, new THREE.Vector3(side * 0.19, 0.035, 0));
-    ear.scale.set(0.42, 0.72, 0.8);
+    mesh(verticalLoft([
+      { position: -0.065, width: 0.012, depth: 0.018 },
+      { position: -0.035, width: 0.036, depth: 0.028 },
+      { position: 0.015, width: 0.05, depth: 0.032 },
+      { position: 0.07, width: 0.025, depth: 0.02 },
+    ]), skin, head, new THREE.Vector3(side * 0.19, 0.035, 0));
     if (race === 'Elf' || race === 'Beastkin') {
       const point = mesh(new THREE.ConeGeometry(race === 'Elf' ? 0.052 : 0.075, race === 'Elf' ? 0.25 : 0.2, 8), skin, head, new THREE.Vector3(side * 0.27, 0.075, 0));
       point.rotation.z = side * -Math.PI / 2;
       if (race === 'Beastkin') {
-        const inner = mesh(new THREE.ConeGeometry(0.039, 0.115, 7), actorToonMaterial(0x76504a), head, new THREE.Vector3(side * 0.271, 0.068, 0.035));
+        const inner = mesh(new THREE.ConeGeometry(0.039, 0.115, 7), actorMaterial(0x76504a, 'skin'), head, new THREE.Vector3(side * 0.271, 0.068, 0.035));
         inner.rotation.z = side * -Math.PI / 2;
       }
     }
@@ -219,29 +337,52 @@ export function createCharacterRig(race: Race): CharacterRig {
     }
   }
 
-  const hairCap = mesh(new THREE.SphereGeometry(0.195, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.53), hair, head, new THREE.Vector3(0, 0.11, -0.015));
-  hairCap.scale.set(1.02, 0.9, 1.05);
+  mesh(verticalLoft([
+    { position: 0.025, width: 0.17, depth: 0.13, offset: -0.01 },
+    { position: 0.085, width: 0.185, depth: 0.135, offset: -0.015 },
+    { position: 0.15, width: 0.155, depth: 0.115, offset: -0.018 },
+    { position: 0.205, width: 0.085, depth: 0.07, offset: -0.018 },
+    { position: 0.23, width: 0.008, depth: 0.008, offset: -0.018 },
+  ]), hair, head, new THREE.Vector3(0, 0.005, 0));
   for (let i = -1; i <= 1; i++) {
-    const fringe = mesh(new THREE.CapsuleGeometry(0.021, 0.065, 3, 7), hair, head, new THREE.Vector3(i * 0.055, 0.16 - Math.abs(i) * 0.012, 0.14));
-    fringe.rotation.z = i * 0.24;
+    mesh(sweptTube([
+      new THREE.Vector3(i * 0.045, 0.18, 0.105),
+      new THREE.Vector3(i * 0.055, 0.15, 0.15),
+      new THREE.Vector3(i * 0.065, 0.085, 0.16),
+    ], 0.017, 12, 6), hair, head, new THREE.Vector3());
   }
-  for (let i = 0; i < (race === 'Dwarf' ? 7 : 5); i++) {
-    const lock = mesh(new THREE.CapsuleGeometry(0.025, 0.12 + (i % 3) * 0.035, 3, 6), hair, head, new THREE.Vector3((i - 2) * 0.045, 0.055, -0.13));
-    lock.rotation.z = (i - 2) * 0.17;
+  for (let i = -2; i <= 2; i++) {
+    mesh(sweptTube([
+      new THREE.Vector3(i * 0.04, 0.11, -0.09),
+      new THREE.Vector3(i * 0.05, 0.015, -0.145),
+      new THREE.Vector3(i * 0.06, -0.1 - (Math.abs(i) % 2) * 0.04, -0.115),
+    ], 0.021, 16, 7), hair, head, new THREE.Vector3());
   }
   if (race === 'Dwarf') {
-    const beard = mesh(organicForm(0.29, 0.12, 0.09, [0.72, 1, 0.94, 0.68, 0.25]), hair, head, new THREE.Vector3(0, -0.15, 0.14));
-    beard.rotation.x = -0.12;
+    mesh(verticalLoft([
+      { position: -0.4, width: 0.018, depth: 0.025, offset: 0.13 },
+      { position: -0.31, width: 0.07, depth: 0.065, offset: 0.115 },
+      { position: -0.2, width: 0.115, depth: 0.09, offset: 0.09 },
+      { position: -0.115, width: 0.105, depth: 0.075, offset: 0.075 },
+    ]), hair, head, new THREE.Vector3());
     for (const side of [-1, 1]) {
-      const braid = mesh(new THREE.CapsuleGeometry(0.025, 0.18, 3, 6), hair, head, new THREE.Vector3(side * 0.13, -0.12, 0.075));
-      braid.rotation.z = side * -0.22;
-      mesh(new THREE.TorusGeometry(0.027, 0.008, 5, 10), trim, head, new THREE.Vector3(side * 0.13, -0.22, 0.08));
+      mesh(sweptTube([
+        new THREE.Vector3(side * 0.1, -0.1, 0.08),
+        new THREE.Vector3(side * 0.14, -0.19, 0.07),
+        new THREE.Vector3(side * 0.12, -0.31, 0.08),
+        new THREE.Vector3(side * 0.1, -0.39, 0.11),
+      ], 0.025, 18, 8), hair, head, new THREE.Vector3());
+      mesh(new THREE.TorusGeometry(0.027, 0.008, 5, 10), trim, head, new THREE.Vector3(side * 0.1, -0.23, 0.08));
     }
   }
   if (race === 'Beastkin') {
     for (let i = 0; i < 9; i++) {
-      const tuft = mesh(new THREE.ConeGeometry(0.035, 0.12, 5), hair, head, new THREE.Vector3((i - 4) * 0.035, 0.04, 0.15));
-      tuft.rotation.z = (i - 4) * 0.12;
+      const x = (i - 4) * 0.035;
+      mesh(sweptTube([
+        new THREE.Vector3(x, 0.1, 0.13),
+        new THREE.Vector3(x + (i - 4) * 0.008, 0.02, 0.17),
+        new THREE.Vector3(x + (i - 4) * 0.015, -0.035, 0.17),
+      ], 0.018, 10, 6), hair, head, new THREE.Vector3());
     }
   }
 
@@ -250,9 +391,14 @@ export function createCharacterRig(race: Race): CharacterRig {
     shoulder.name = side < 0 ? 'LeftShoulder' : 'RightShoulder';
     shoulder.position.set(side * 0.29, 0.48, 0);
     spine.add(shoulder);
-    mesh(new THREE.SphereGeometry(0.14, 14, 12), cloth, shoulder, new THREE.Vector3(0, -0.03, 0));
-    const pauldron = mesh(new THREE.SphereGeometry(0.15, 16, 12), armor, shoulder, new THREE.Vector3(side * 0.035, 0.015, 0.015));
-    pauldron.scale.set(1.14, 0.68, 1.12);
+    mesh(verticalLoft([
+      { position: -0.16, width: 0.09, depth: 0.09 },
+      { position: -0.08, width: 0.13, depth: 0.12 },
+      { position: 0.02, width: 0.145, depth: 0.125 },
+      { position: 0.09, width: 0.1, depth: 0.085 },
+    ]), cloth, shoulder, new THREE.Vector3(0, -0.02, 0));
+    const pauldron = mesh(curvedPlateGeometry(0.28, 0.29, 0.055, 0.052), armor, shoulder, new THREE.Vector3(side * 0.035, 0.035, 0.02));
+    pauldron.rotation.set(0.16, side * 0.12, side * -0.08);
     mesh(new THREE.TorusGeometry(0.105, 0.012, 5, 16), trim, shoulder, new THREE.Vector3(side * 0.035, -0.01, 0.07)).scale.set(1, 0.78, 0.55);
     for (const rivetSide of [-1, 1]) {
       mesh(new THREE.SphereGeometry(0.014, 8, 6), trim, shoulder, new THREE.Vector3(side * 0.09, -0.04, rivetSide * 0.065 + 0.09));
@@ -266,7 +412,12 @@ export function createCharacterRig(race: Race): CharacterRig {
     elbow.name = side < 0 ? 'LeftLowerArm' : 'RightLowerArm';
     elbow.position.y = -0.29;
     upperArm.add(elbow);
-    mesh(new THREE.SphereGeometry(0.075, 10, 8), skin, elbow, new THREE.Vector3(0, 0, 0));
+    mesh(verticalLoft([
+      { position: -0.055, width: 0.045, depth: 0.045 },
+      { position: -0.025, width: 0.07, depth: 0.07 },
+      { position: 0.025, width: 0.07, depth: 0.07 },
+      { position: 0.06, width: 0.048, depth: 0.05 },
+    ]), skin, elbow, new THREE.Vector3(0, 0, 0));
     mesh(organicForm(0.29, 0.075, 0.08, [0.75, 0.98, 1, 0.7]), armor, elbow, new THREE.Vector3(0, -0.13, 0.01));
     const bracer = mesh(new THREE.CylinderGeometry(0.082, 0.095, 0.13, 12, 1, true), leather, elbow, new THREE.Vector3(0, -0.21, 0.01));
     bracer.rotation.z = side * 0.04;
@@ -276,15 +427,32 @@ export function createCharacterRig(race: Race): CharacterRig {
     hand.name = side < 0 ? 'LeftHand' : 'RightHand';
     hand.position.y = -0.3;
     elbow.add(hand);
-    mesh(new THREE.SphereGeometry(0.065, 12, 10), skin, hand, new THREE.Vector3(0, 0, 0.02));
+    mesh(verticalLoft([
+      { position: -0.065, width: 0.043, depth: 0.035, offset: 0.028 },
+      { position: -0.035, width: 0.07, depth: 0.045, offset: 0.03 },
+      { position: 0.025, width: 0.064, depth: 0.047, offset: 0.025 },
+      { position: 0.055, width: 0.045, depth: 0.035, offset: 0.015 },
+    ]), glove, hand, new THREE.Vector3(0, -0.005, 0.025));
     for (let finger = 0; finger < 4; finger++) {
-      const digit = mesh(new THREE.CapsuleGeometry(0.012, 0.055, 3, 5), skin, hand, new THREE.Vector3((finger - 1.5) * 0.026, -0.045, 0.035));
-      digit.rotation.z = (finger - 1.5) * 0.08;
+      const x = (finger - 1.5) * 0.031;
+      mesh(verticalLoft([
+        { position: -0.095, width: 0.008, depth: 0.009 },
+        { position: -0.065, width: 0.012, depth: 0.012 },
+        { position: -0.025, width: 0.011, depth: 0.011 },
+        { position: 0.012, width: 0.008, depth: 0.009 },
+      ]), glove, hand, new THREE.Vector3(x, -0.015, 0.065));
     }
+    mesh(sweptTube([
+      new THREE.Vector3(side * -0.04, 0.025, 0.03),
+      new THREE.Vector3(side * -0.085, -0.015, 0.06),
+      new THREE.Vector3(side * -0.09, -0.06, 0.085),
+    ], 0.012, 10, 6), glove, hand, new THREE.Vector3());
+    mesh(curvedPlateGeometry(0.105, 0.055, 0.012, 0.012), armor, hand, new THREE.Vector3(0, -0.005, 0.072));
     if (side === 1) {
       const weaponSocket = new THREE.Bone();
       weaponSocket.name = 'WeaponSocket';
-      weaponSocket.position.set(0, -0.05, 0.045);
+      weaponSocket.position.set(0, 0.08, 0.045);
+      if (race === 'Dwarf') weaponSocket.scale.setScalar(0.7);
       hand.add(weaponSocket);
       const grip = mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.17, 8), leather, weaponSocket, new THREE.Vector3(0, -0.03, 0));
       grip.rotation.z = -0.36;
@@ -309,7 +477,8 @@ export function createCharacterRig(race: Race): CharacterRig {
       fuller.rotation.z = -0.36;
       mesh(new THREE.SphereGeometry(0.045, 8, 8), trim, weaponSocket, new THREE.Vector3(0, 0.065, 0));
     } else {
-      mesh(new THREE.BoxGeometry(0.12, 0.045, 0.055), leather, hand, new THREE.Vector3(0, -0.09, 0));
+      const cuff = mesh(new THREE.TorusGeometry(0.045, 0.009, 6, 14), trim, hand, new THREE.Vector3(0, -0.08, 0.035));
+      cuff.rotation.x = Math.PI / 2;
     }
 
     const hip = new THREE.Bone();
@@ -321,18 +490,32 @@ export function createCharacterRig(race: Race): CharacterRig {
     knee.name = side < 0 ? 'LeftLowerLeg' : 'RightLowerLeg';
     knee.position.y = -0.32;
     hip.add(knee);
-    mesh(new THREE.SphereGeometry(0.075, 10, 8), armor, knee, new THREE.Vector3(0, 0, 0.015));
+    const kneeGuard = mesh(curvedPlateGeometry(0.15, 0.16, 0.035, 0.032), armor, knee, new THREE.Vector3(0, -0.005, 0.055));
+    kneeGuard.rotation.x = -0.08;
     mesh(organicForm(0.34, 0.075, 0.085, [0.72, 0.94, 1, 0.71]), cloth, knee, new THREE.Vector3(0, -0.16, 0));
+    mesh(verticalLoft([
+      { position: -0.31, width: 0.07, depth: 0.075 },
+      { position: -0.23, width: 0.085, depth: 0.09 },
+      { position: -0.12, width: 0.095, depth: 0.105 },
+      { position: -0.04, width: 0.082, depth: 0.09 },
+    ]), leather, knee, new THREE.Vector3(0, -0.12, 0.015));
+    for (const cuffY of [-0.27, -0.12]) {
+      mesh(new THREE.TorusGeometry(0.079, 0.008, 5, 18), trim, knee, new THREE.Vector3(0, cuffY, 0.015));
+    }
     const boot = new THREE.Bone();
     boot.name = side < 0 ? 'LeftFoot' : 'RightFoot';
-    boot.position.set(0, -0.34, 0.045);
+    boot.position.set(0, race === 'Dwarf' ? -0.31 : -0.25, 0.045);
     knee.add(boot);
-    const bootMesh = mesh(new THREE.CapsuleGeometry(0.09, 0.18, 4, 8), leather, boot, new THREE.Vector3(0, -0.045, 0.035));
-    bootMesh.scale.set(1, 0.75, 1.35);
-    mesh(new THREE.BoxGeometry(0.18, 0.045, 0.28), armor, boot, new THREE.Vector3(0, -0.12, 0.075));
+    mesh(longitudinalLoft([
+      { position: -0.08, width: 0.055, depth: 0.055, offset: -0.06 },
+      { position: -0.02, width: 0.08, depth: 0.072, offset: -0.05 },
+      { position: 0.08, width: 0.09, depth: 0.065, offset: -0.065 },
+      { position: 0.18, width: 0.068, depth: 0.044, offset: -0.075 },
+      { position: 0.22, width: 0.025, depth: 0.025, offset: -0.075 },
+    ]), leather, boot, new THREE.Vector3(0, 0, 0.02));
+    mesh(curvedPlateGeometry(0.14, 0.08, 0.018, 0.025), armor, boot, new THREE.Vector3(0, -0.08, 0.15));
 
     if (race === 'Dwarf') {
-      hip.scale.y = 0.88;
       shoulder.scale.set(1.12, 1.08, 1.1);
     }
   }
@@ -344,9 +527,11 @@ export function createCharacterRig(race: Race): CharacterRig {
     tail.rotation.x = -0.55;
     rig.add(tail);
     mesh(organicForm(0.58, 0.09, 0.09, [0.66, 0.8, 0.7, 0.48, 0.25]), hair, tail, new THREE.Vector3(0, -0.25, 0));
-    const tailTip = mesh(new THREE.SphereGeometry(0.105, 12, 10), actorToonMaterial(0xdbc2a1), tail, new THREE.Vector3(0, -0.52, 0));
+    const tailTip = mesh(new THREE.SphereGeometry(0.105, 12, 10), actorMaterial(0xdbc2a1, 'fur'), tail, new THREE.Vector3(0, -0.52, 0));
     tailTip.scale.set(1, 1.25, 1);
   }
+
+  consolidateActorMeshes(model);
 
   let elapsed = 0;
   let attackTime = 0;
@@ -383,14 +568,20 @@ export function createCharacterRig(race: Race): CharacterRig {
           if (knee instanceof THREE.Bone) {
             const kneePose = Math.max(0, Math.sin(gait + (side < 0 ? 0 : Math.PI))) * stride * 0.72;
             knee.rotation.x = THREE.MathUtils.lerp(kneePose, 0.58, jumpBlend);
+            const foot = knee.children.find((part) => part instanceof THREE.Bone && part.name.endsWith('Foot'));
+            if (foot instanceof THREE.Bone) foot.rotation.x = -gaitPose * 0.32;
           }
         }
       }
       const dying = dead ? 1 : 0;
       spine.rotation.z = (Math.sin(gait) * stride * 0.045) - blockBlend * 0.06
         + (damageTime > 0 ? Math.sin((damageTime / 0.22) * Math.PI) * 0.2 : 0);
-      spine.rotation.x = -blockBlend * 0.08 + jumpBlend * 0.14;
+      spine.rotation.x = -blockBlend * 0.08 + jumpBlend * 0.14 + Math.sin(elapsed * 1.8) * (movementBlend > 0.05 ? 0.012 : 0.006);
+      spine.rotation.y = Math.sin(gait * 0.5) * stride * 0.025;
       spine.position.y = 0.12 + (movementBlend > 0.05 ? Math.abs(Math.sin(gait * 2)) * (0.018 + sprintBlend * 0.017) : Math.sin(elapsed * 1.8) * 0.008);
+      neck.rotation.x = -0.025 - sprintBlend * 0.035 + Math.sin(elapsed * 1.6) * (0.012 + movementBlend * 0.01);
+      head.rotation.x = Math.sin(elapsed * 1.1) * 0.018 - jumpBlend * 0.035;
+      head.rotation.y = Math.sin(elapsed * 0.43) * 0.035;
       if (tailBone) {
         tailBone.rotation.x = -0.55 + Math.sin(elapsed * 2.8) * 0.18;
         tailBone.rotation.z = Math.sin(elapsed * 2.1) * 0.16;

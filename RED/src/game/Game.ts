@@ -4,7 +4,7 @@ import { AssetManager } from '../core/AssetManager';
 import { getGraphicsConfig, selectGraphicsConfig, type GraphicsQuality } from '../core/GraphicsConfig';
 import { InputManager } from '../core/InputManager';
 import { SaveManager } from '../core/SaveManager';
-import { createCharacter, type CharacterData, type Race } from '../core/types';
+import { createCharacter, type CharacterData, type GameLocation, type Race } from '../core/types';
 import { CreatureSystem } from '../creatures/CreatureSystem';
 import type { Creature } from '../creatures/Creature';
 import { createCharacterRig, type CharacterRig } from '../actors/CharacterRig';
@@ -32,7 +32,7 @@ interface PendingAttack {
 
 export class Game {
   private readonly renderer: THREE.WebGLRenderer;
-  private readonly camera = new THREE.PerspectiveCamera(68, 1, 0.1, 180);
+  private readonly camera = new THREE.PerspectiveCamera(68, 1, 0.1, 400);
   private graphics = selectGraphicsConfig();
   private readonly assets: AssetManager;
   private readonly saves = new SaveManager();
@@ -59,6 +59,7 @@ export class Game {
   private deathTimeout = 0;
   private sprintTouch = false;
   private blockTouch = false;
+  private pendingBossReturn: string | null = null;
   private promptText = '';
   private readonly lootDrops: Array<{ mesh: THREE.Mesh; item: string }> = [];
   private readonly onCanvasPointerDown = (event: PointerEvent): void => {
@@ -109,7 +110,7 @@ export class Game {
     if (this.disposed) return;
     this.physics = new RAPIER.World({ x: 0, y: -19.6, z: 0 });
     this.physics.timestep = 1 / 60;
-    this.world = new World(this.assets, this.physics, this.graphics);
+    this.world = new World(this.assets, this.physics, this.graphics, 'hub');
     this.world.scene.add(this.camera);
     this.positionMenuCamera();
     await this.saves.open();
@@ -121,6 +122,9 @@ export class Game {
     if (this.disposed) {
       this.saves.close();
       return;
+    }
+    if (this.savedCharacter && this.savedCharacter.tower.currentLocation !== this.world.location) {
+      this.replaceWorld(this.savedCharacter.tower.currentLocation);
     }
     this.ui.showSavedCharacter(this.savedCharacter);
     this.renderer.setAnimationLoop(this.frame);
@@ -137,7 +141,11 @@ export class Game {
   private launchCharacter(character: CharacterData): void {
     window.clearTimeout(this.deathTimeout);
     this.deathTimeout = 0;
+    this.pendingBossReturn = null;
     if (this.playing) this.disposeActors();
+    if (this.world.location !== character.tower.currentLocation) {
+      this.replaceWorld(character.tower.currentLocation);
+    }
     this.disposeMenuPreview();
     this.clearLootDrops();
     this.savedCharacter = character;
@@ -155,11 +163,14 @@ export class Game {
       this.assets,
       character,
       (x, z) => this.world.getSurfaceHeight(x, z),
+      this.world.location,
     );
     this.world.startAmbience();
     this.playing = true;
     this.ui.startGame(character);
-    this.ui.toastMessage(`Welcome to the valley, ${character.name}.`);
+    this.ui.toastMessage(this.world.location === 'hub'
+      ? `Welcome to the Eternal Sanctuary, ${character.name}.`
+      : `Welcome back, ${character.name}.`);
     void this.persist();
   }
 
@@ -249,6 +260,18 @@ export class Game {
     );
 
     this.updatePendingAttack(delta);
+    if (this.pendingBossReturn) {
+      const message = this.pendingBossReturn;
+      this.pendingBossReturn = null;
+      this.input.attackPressed = false;
+      this.input.interactPressed = false;
+      this.input.spiritPressed = false;
+      this.input.inventoryPressed = false;
+      this.input.cameraPressed = false;
+      this.transitionTo('hub');
+      this.ui.toastMessage(message);
+      return;
+    }
     if (this.input.attackPressed) this.performAttack();
     if (this.input.interactPressed) this.interact();
     if (this.input.spiritPressed) this.toggleSpirit();
@@ -262,6 +285,9 @@ export class Game {
     this.discoverLandmarks();
     this.updatePrompt();
     this.physics.step();
+    const boss = creatures.creatures.find((creature) =>
+      creature.bossId && creature.mood !== 'dead' && creature.model.position.distanceTo(position) < 32,
+    );
     this.ui.update({
       character: player.character,
       health: player.health,
@@ -279,6 +305,16 @@ export class Game {
         z: position.z,
         discovered: player.character.discoveredLocations.includes(name),
       })),
+      location: this.world.location,
+      tower: player.character.tower,
+      boss: boss ? {
+        id: boss.bossId ?? 'boss',
+        name: boss.bossName ?? 'Boss',
+        health: boss.health,
+        maxHealth: boss.maxHealth,
+        phase: boss.bossPhase,
+        visualStatus: boss.visualAnimationStatus,
+      } : undefined,
     });
     if (this.autoSaveTimer > 20) {
       this.autoSaveTimer = 0;
@@ -327,7 +363,7 @@ export class Game {
       attack.sequence,
     );
     this.ui.toastMessage(
-      `Combo ${attack.sequence + 1}/3 · ${attack.target.kind} · ${Math.ceil(attack.damage)} damage`,
+      `Combo ${attack.sequence + 1}/3 · ${attack.target.displayName} · ${Math.ceil(attack.damage)} damage`,
     );
   }
 
@@ -407,6 +443,15 @@ export class Game {
 
   private interact(): void {
     const player = this.player!;
+    const portal = this.world.portals.find(({ position }) => position.distanceTo(player.model.position) < 3);
+    if (portal) {
+      if (portal.floor !== null && !player.character.tower.unlockedFloors.includes(portal.floor)) {
+        this.ui.toastMessage(`${portal.label} remains sealed · defeat the previous floor boss first.`);
+        return;
+      }
+      this.transitionTo(portal.destination);
+      return;
+    }
     if (this.creatures!.tameNearest(player.model.position)) {
       player.character.companions = 1;
       player.character.inventory.push('Wolf companion');
@@ -453,9 +498,19 @@ export class Game {
   }
 
   private rewardCreature(creature: Creature): void {
+    if (creature.bossId) {
+      void this.completeBoss(creature);
+      return;
+    }
     let item: string;
     let experience: number;
-    if (creature.kind === 'deer') {
+    if (creature.displayName === 'Gloom Stalker') {
+      item = 'Gloom shard';
+      experience = 42;
+    } else if (creature.displayName === 'Hollow Warden') {
+      item = 'Warden iron';
+      experience = 58;
+    } else if (creature.kind === 'deer') {
       item = 'Deer hide';
       experience = 18;
     } else if (creature.kind === 'wolf') {
@@ -471,11 +526,36 @@ export class Game {
     );
     mesh.position.copy(creature.model.position).add(new THREE.Vector3(0, 0.3, 0));
     mesh.castShadow = true;
+
     this.world.scene.add(mesh);
     this.lootDrops.push({ mesh, item });
     this.addExperience(experience);
     this.ui.toastMessage(`${item} dropped · +${experience} XP · press E to collect`);
     void this.persist();
+  }
+
+  private async completeBoss(creature: Creature): Promise<void> {
+    const player = this.player;
+    const character = player?.character;
+    if (!character || !creature.bossId || character.tower.defeatedBosses.includes(creature.bossId)) return;
+    character.tower.defeatedBosses.push(creature.bossId);
+    if (creature.bossId === 'ancient-wolf' && !character.tower.unlockedFloors.includes(2)) {
+      character.tower.unlockedFloors.push(2);
+      character.inventory.push('Ancient Wolf Sigil');
+    } else if (creature.bossId === 'eternal-phoenix' && !character.tower.unlockedFloors.includes(3)) {
+      character.tower.unlockedFloors.push(3);
+      character.inventory.push('Phoenix Ember');
+    } else if (creature.bossId === 'eternal-dragon') {
+      character.inventory.push('Eternal Dragon Heart');
+    }
+    this.addExperience(300);
+    const message = creature.bossId === 'eternal-dragon'
+      ? 'Eternal Dragon defeated · the tower is cleared.'
+      : `${creature.bossName} defeated · the next tower portal awakens.`;
+    await this.persist();
+    if (!this.disposed && this.playing && this.player?.character === character) {
+      this.pendingBossReturn = message;
+    }
   }
 
   private addExperience(amount: number): void {
@@ -508,8 +588,8 @@ export class Game {
     this.deathTimeout = window.setTimeout(() => {
       this.deathTimeout = 0;
       if (!this.playing || !this.player) return;
-      this.player.restore();
-      this.ui.toastMessage('You awaken at the valley entrance.');
+      this.player.restore(this.world.spawn);
+      this.ui.toastMessage('You awaken at the floor entrance.');
     }, 3000);
   }
 
@@ -524,8 +604,19 @@ export class Game {
     }
   }
 
+
+
   private updatePrompt(): void {
     const position = this.player!.model.position;
+    const portal = this.world.portals.find(({ position: portalPosition }) => portalPosition.distanceTo(position) < 3);
+    if (portal) {
+
+      const locked = portal.floor !== null && !this.player!.character.tower.unlockedFloors.includes(portal.floor);
+      this.promptText = locked
+        ? `E · ${portal.label} sealed`
+        : `E · ${portal.label}`;
+      return;
+    }
     const wolf = this.creatures!.creatures.find((creature) =>
       creature.kind === 'wolf' && creature.mood === 'hostile' && creature.health <= 24
       && creature.model.position.distanceTo(position) < 3,
@@ -546,6 +637,52 @@ export class Game {
   private toggleInventory(): void {
     this.ui.toggleInventory();
     this.input.inventoryPressed = false;
+  }
+
+  private transitionTo(location: GameLocation): void {
+    if (!this.player) return;
+    const character = this.player.character;
+    if (location.startsWith('floor')) {
+      const floor = Number(location.slice(-1));
+      if (!character.tower.unlockedFloors.includes(floor)) {
+        this.ui.toastMessage(`Floor ${floor} is locked · defeat the previous floor boss first.`);
+        return;
+      }
+    }
+    this.replaceWorld(location);
+    character.tower.currentLocation = location;
+    this.respawnTimer = 0;
+    window.clearTimeout(this.deathTimeout);
+    this.deathTimeout = 0;
+    this.creatures = new CreatureSystem(
+      this.world.scene,
+      this.physics,
+      this.assets,
+      character,
+      (x, z) => this.world.getSurfaceHeight(x, z),
+      this.world.location,
+    );
+    this.world.startAmbience();
+    this.ui.toastMessage(location === 'hub'
+      ? 'The Eternal Sanctuary · safe haven'
+      : `Entered ${this.world.location.replace('floor', 'Floor ')}.`);
+    void this.persist();
+  }
+
+  private replaceWorld(location: GameLocation): void {
+    this.creatures?.dispose();
+    this.creatures = null;
+    this.clearLootDrops();
+    this.clearHitEffects();
+    this.world.scene.remove(this.camera);
+    this.world.dispose();
+    this.world = new World(this.assets, this.physics, this.graphics, location);
+    this.world.scene.add(this.camera);
+    if (this.player) {
+      this.player.teleport(this.world.spawn);
+      this.world.scene.add(this.player.model);
+    }
+    this.physics.updateSceneQueries();
   }
 
   private setGraphicsQuality(quality: GraphicsQuality): void {

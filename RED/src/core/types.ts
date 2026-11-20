@@ -1,6 +1,13 @@
 export type Race = 'Human' | 'Elf' | 'Dwarf' | 'Beastkin';
 export type CreatureKind = 'wolf' | 'deer' | 'bear';
 export type CreatureMood = 'hostile' | 'passive' | 'territorial' | 'tamed' | 'dead';
+export type GameLocation = 'hub' | 'floor1' | 'floor2' | 'floor3';
+
+export interface TowerProgression {
+  currentLocation: GameLocation;
+  unlockedFloors: number[];
+  defeatedBosses: string[];
+}
 
 export interface Attributes {
   health: number;
@@ -22,6 +29,40 @@ export interface CharacterData {
   equipment: string[];
   companions: number;
   discoveredLocations: string[];
+  tower: TowerProgression;
+}
+
+export function createTowerProgression(currentLocation: GameLocation = 'hub'): TowerProgression {
+  return {
+    currentLocation,
+    unlockedFloors: [1],
+    defeatedBosses: [],
+  };
+}
+
+export function normalizeTowerProgression(value: unknown, fallback: GameLocation = 'floor1'): TowerProgression {
+  if (!value || typeof value !== 'object') return createTowerProgression(fallback);
+  const saved = value as Partial<TowerProgression>;
+  const unlockedFloors = Array.isArray(saved.unlockedFloors)
+    ? [...new Set(saved.unlockedFloors.filter((floor): floor is number =>
+      Number.isInteger(floor) && floor >= 1 && floor <= 3,
+    ))].sort((a, b) => a - b)
+    : [1];
+  if (!unlockedFloors.includes(1)) unlockedFloors.unshift(1);
+  const defeatedBosses = Array.isArray(saved.defeatedBosses)
+    ? [...new Set(saved.defeatedBosses.filter((boss): boss is string => typeof boss === 'string'))]
+    : [];
+  const requestedLocation = saved.currentLocation;
+  const currentLocation: GameLocation = requestedLocation === 'hub'
+    || requestedLocation === 'floor1'
+    || requestedLocation === 'floor2'
+    || requestedLocation === 'floor3'
+      ? requestedLocation
+      : fallback;
+  const floor = Number(currentLocation.slice(-1));
+  return currentLocation === 'hub' || unlockedFloors.includes(floor)
+    ? { currentLocation, unlockedFloors, defeatedBosses }
+    : { currentLocation: 'hub', unlockedFloors, defeatedBosses };
 }
 
 export const RACE_ATTRIBUTES: Record<Race, Attributes> = {
@@ -42,5 +83,6 @@ export function createCharacter(race: Race, name: string): CharacterData {
     equipment: ['Worn sword'],
     companions: 0,
     discoveredLocations: ['Forgotten Valley'],
+    tower: createTowerProgression(),
   };
 }

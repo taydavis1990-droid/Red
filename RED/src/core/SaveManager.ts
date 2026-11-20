@@ -1,10 +1,10 @@
 import type { CharacterData } from './types';
-import { createCharacter } from './types';
+import { createCharacter, normalizeTowerProgression } from './types';
 
 const DATABASE = 'red-forgotten-valley';
 const STORE = 'saves';
 const SAVE_KEY = 'main';
-const SAVE_VERSION = 1;
+const SAVE_VERSION = 2;
 
 interface SaveRecord {
   version: number;
@@ -54,6 +54,17 @@ export class SaveManager {
             inventory: record.character.inventory ?? defaults.inventory,
             equipment: record.character.equipment ?? defaults.equipment,
             discoveredLocations: record.character.discoveredLocations ?? defaults.discoveredLocations,
+          },
+        };
+        continue;
+      }
+      if (record.version === 1) {
+        record = {
+          ...record,
+          version: 2,
+          character: {
+            ...record.character,
+            tower: normalizeTowerProgression(record.character.tower, 'hub'),
           },
         };
         continue;

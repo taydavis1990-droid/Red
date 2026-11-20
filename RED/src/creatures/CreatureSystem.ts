@@ -1,8 +1,16 @@
 import * as THREE from 'three';
 import type * as RAPIER from '@dimforge/rapier3d-compat';
 import type { AssetManager } from '../core/AssetManager';
-import type { CharacterData } from '../core/types';
-import { Creature } from './Creature';
+import type { CharacterData, GameLocation } from '../core/types';
+import { Creature, type CreatureBossConfig } from './Creature';
+import {
+  ANCIENT_WOLF_BOSS_ASSET,
+  ETERNAL_DRAGON_BOSS_ASSET,
+  ETERNAL_PHOENIX_BOSS_ASSET,
+  GLOOM_STALKER_ASSET,
+  HOLLOW_WARDEN_ASSET,
+} from './CreatureAssetConfig';
+import type { CreatureAssetConfig } from './CreatureAssetConfig';
 
 export class CreatureSystem {
   readonly creatures: Creature[] = [];
@@ -21,13 +29,54 @@ export class CreatureSystem {
     private readonly assets: AssetManager,
     character: CharacterData,
     private readonly surfaceHeightAt: (x: number, z: number) => number = () => 0,
+    location: GameLocation = 'floor1',
   ) {
-    this.spawn('wolf', new THREE.Vector3(-8, 0, 3));
-    this.spawn('wolf', new THREE.Vector3(10, 0, -16));
-    this.spawn('deer', new THREE.Vector3(7, 0, 9));
-    this.spawn('deer', new THREE.Vector3(-19, 0, 5));
-    this.spawn('bear', new THREE.Vector3(23, 0, 12));
-    this.spawn('bear', new THREE.Vector3(-28, 0, -23));
+    if (location === 'floor1') {
+      this.spawn('wolf', new THREE.Vector3(-8, 0, 3));
+      this.spawn('wolf', new THREE.Vector3(10, 0, -16));
+      this.spawn('deer', new THREE.Vector3(7, 0, 9));
+      this.spawn('deer', new THREE.Vector3(-19, 0, 5));
+      this.spawn('bear', new THREE.Vector3(23, 0, 12));
+      this.spawn('bear', new THREE.Vector3(-28, 0, -23));
+      this.spawn('bear', new THREE.Vector3(-22, 0, -24), null, GLOOM_STALKER_ASSET);
+      if (!character.tower.defeatedBosses.includes('ancient-wolf')) {
+        this.spawn('wolf', new THREE.Vector3(0, 0, -27), {
+          id: 'ancient-wolf',
+          name: 'Ancient Wolf',
+          health: 420,
+          damage: 22,
+          range: 2.8,
+          size: 1.85,
+          modelHeight: 2.45,
+        }, ANCIENT_WOLF_BOSS_ASSET);
+      }
+    } else if (location === 'floor2') {
+      this.spawn('bear', new THREE.Vector3(7, 0, -14), null, HOLLOW_WARDEN_ASSET);
+      if (!character.tower.defeatedBosses.includes('eternal-phoenix')) {
+        this.spawn('bear', new THREE.Vector3(0, 0, -27), {
+          id: 'eternal-phoenix',
+          name: 'Eternal Phoenix',
+          health: 560,
+          damage: 25,
+          range: 9,
+          size: 1.8,
+          modelHeight: 2.5,
+          hoverHeight: 1.1,
+        }, ETERNAL_PHOENIX_BOSS_ASSET);
+      }
+    } else if (location === 'floor3') {
+      if (!character.tower.defeatedBosses.includes('eternal-dragon')) {
+        this.spawn('bear', new THREE.Vector3(0, 0, -27), {
+          id: 'eternal-dragon',
+          name: 'Eternal Dragon',
+          health: 760,
+          damage: 32,
+          range: 4.2,
+          size: 2.1,
+          modelHeight: 3.2,
+        }, ETERNAL_DRAGON_BOSS_ASSET);
+      }
+    }
     if (character.companions > 0) {
       const companion = this.spawn('wolf', new THREE.Vector3(1.2, 0, 14));
       companion.tame();
@@ -35,8 +84,13 @@ export class CreatureSystem {
     }
   }
 
-  private spawn(kind: 'wolf' | 'deer' | 'bear', position: THREE.Vector3): Creature {
-    const creature = new Creature(kind, position, this.physics, this.assets, this.surfaceHeightAt);
+  private spawn(
+    kind: 'wolf' | 'deer' | 'bear',
+    position: THREE.Vector3,
+    boss: CreatureBossConfig | null = null,
+    asset: CreatureAssetConfig | null = null,
+  ): Creature {
+    const creature = new Creature(kind, position, this.physics, this.assets, this.surfaceHeightAt, boss, asset);
     this.creatures.push(creature);
     this.scene.add(creature.model);
     return creature;

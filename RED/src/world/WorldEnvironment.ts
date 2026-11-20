@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import * as RAPIER from '@dimforge/rapier3d-compat';
 import { AssetManager } from '../core/AssetManager';
 import type { GraphicsConfig } from '../core/GraphicsConfig';
+import type { GameLocation } from '../core/types';
 import { AmbientAudio } from './AmbientAudio';
 
 interface InstanceSpec {
@@ -98,9 +99,15 @@ export class WorldEnvironment {
   private readonly audio = new AmbientAudio();
   private disposed = false;
   private terrainTexture!: THREE.DataTexture;
+  private cloudTexture!: THREE.DataTexture;
   private particles!: THREE.Points;
   private sun!: THREE.DirectionalLight;
   private hemisphere!: THREE.HemisphereLight;
+  private warmLight: THREE.PointLight | null = null;
+  private readonly overcastSky = new THREE.Color(0xb9c8d1);
+  private readonly clearSky = new THREE.Color(0xffdfb2);
+  private readonly overcastHaze = new THREE.Color(0x4c5d68);
+  private readonly clearHaze = new THREE.Color(0x75848c);
   private elapsed = 0;
 
   constructor(
@@ -109,6 +116,7 @@ export class WorldEnvironment {
     private readonly physics: RAPIER.World,
     private graphics: GraphicsConfig,
     private readonly anchors: THREE.Vector3[],
+    private readonly location: GameLocation,
   ) {
     this.riverCurve = new THREE.CatmullRomCurve3([
       new THREE.Vector3(-31, 0, -4),
@@ -153,13 +161,22 @@ export class WorldEnvironment {
     for (const { curve } of this.paths) this.curvePoints.set(curve, curve.getPoints(64));
 
     this.buildTerrain();
-    this.buildPaths();
-    this.buildRiver();
     this.buildMountains();
-    this.buildForest();
-    this.buildRuin();
-    this.buildCave();
-    this.buildAbandonedCamp();
+    if (location === 'floor1') {
+      this.buildPaths();
+      this.buildRiver();
+      this.buildForest();
+      this.buildRuin();
+      this.buildCave();
+      this.buildAbandonedCamp();
+      this.addReturnPortal();
+    } else if (location === 'hub') {
+      this.buildSanctuary();
+    } else if (location === 'floor2') {
+      this.buildAshenSanctuary();
+    } else {
+      this.buildDragonThrone();
+    }
     this.buildLighting();
     this.buildParticles();
     for (const anchor of this.anchors) anchor.y = this.getSurfaceHeight(anchor.x, anchor.z);
@@ -185,20 +202,25 @@ export class WorldEnvironment {
       Math.exp(-((x - 19) ** 2 + (z + 4) ** 2) / 81),
       Math.exp(-((x + 29) ** 2 + (z - 17) ** 2) / 64),
     );
-    const riverCut = Math.exp(-((this.distanceToCurve(x, z, this.riverCurve, 36) / 2.9) ** 2)) * 0.34;
+    const riverCut = this.location === 'floor1'
+      ? Math.exp(-((this.distanceToCurve(x, z, this.riverCurve, 36) / 2.9) ** 2)) * 0.34
+      : 0;
     return (foothills + undulation + ridge) * (1 - clearing) - riverCut;
   }
 
   update(delta: number): void {
     this.elapsed += delta;
     for (const uniform of this.windUniforms) uniform.value = this.elapsed;
+    this.cloudTexture.offset.x = (this.elapsed * 0.00055) % 1;
 
     const positions = this.particles.geometry.getAttribute('position');
     for (let i = 0; i < positions.count; i++) {
       let x = positions.getX(i) + Math.sin(this.elapsed * 0.27 + i) * delta * 0.2;
-      let y = positions.getY(i) + delta * (0.03 + (i % 5) * 0.008);
+      let y = positions.getY(i) - delta * (0.3 + (i % 5) * 0.08);
       let z = positions.getZ(i) + Math.cos(this.elapsed * 0.21 + i * 0.7) * delta * 0.17;
-      if (y > 8) y = this.getSurfaceHeight(x, z) + (i % 6) * 0.3;
+      if (y < this.getSurfaceHeight(x, z) + 0.35) {
+        y = this.getSurfaceHeight(x, z) + 4 + (i % 6) * 0.5;
+      }
       if (x > 55) x = -55;
       else if (x < -55) x = 55;
       if (z > 55) z = -55;
@@ -208,8 +230,17 @@ export class WorldEnvironment {
     positions.needsUpdate = true;
 
     const daylight = 0.5 + 0.5 * Math.sin(this.elapsed * 0.018 - 0.7);
-    this.sun.color.setRGB(1, 0.83 + daylight * 0.11, 0.68 + daylight * 0.24);
-    this.sun.intensity = this.graphics.directionalLightIntensity * (0.84 + daylight * 0.16);
+    this.sun.color.copy(this.overcastSky).lerp(this.clearSky, daylight * 0.2);
+    this.sun.intensity = this.graphics.directionalLightIntensity * (0.88 + daylight * 0.12);
+    this.hemisphere.color.copy(this.overcastSky).lerp(this.clearSky, daylight * 0.08);
+    if (this.scene.fog instanceof THREE.Fog) {
+      this.scene.fog.color.copy(this.overcastHaze).lerp(this.clearHaze, daylight * 0.28);
+      this.scene.fog.near = 38 + daylight * 7;
+      this.scene.fog.far = 132 + daylight * 16;
+    }
+    if (this.warmLight) {
+      this.warmLight.intensity = 0.78 + Math.sin(this.elapsed * 8.2) * 0.07 + Math.sin(this.elapsed * 13.7) * 0.035;
+    }
   }
 
   startAmbience(): void {
@@ -234,9 +265,17 @@ export class WorldEnvironment {
     const uvs = new Float32Array(side * side * 2);
     const heights = new Float32Array(side * side);
     const indices = new Uint32Array(TERRAIN_SEGMENTS * TERRAIN_SEGMENTS * 6);
-    const grassColor = new THREE.Color(0x94a878);
-    const dirtColor = new THREE.Color(0xb78b5d);
-    const rockColor = new THREE.Color(0x828d99);
+    const palette = this.location === 'floor2'
+      ? [0x514b49, 0x66544a, 0x555353, 0x8a7770]
+      : this.location === 'floor3'
+        ? [0x69716f, 0x776d62, 0x737a7b, 0xc1c9ca]
+        : this.location === 'hub'
+          ? [0x687465, 0x83745e, 0x767977, 0xc0c8c8]
+          : [0x75816f, 0x89745d, 0x78838b, 0xbec8cc];
+    const grassColor = new THREE.Color(palette[0]);
+    const dirtColor = new THREE.Color(palette[1]);
+    const rockColor = new THREE.Color(palette[2]);
+    const snowColor = new THREE.Color(palette[3]);
     const blendedColor = new THREE.Color();
     const gridSpacing = WORLD_SIZE / TERRAIN_SEGMENTS;
     let vertex = 0;
@@ -258,8 +297,8 @@ export class WorldEnvironment {
         positions[vertex * 3] = x;
         positions[vertex * 3 + 1] = y;
         positions[vertex * 3 + 2] = z;
-        uvs[vertex * 2] = x / 7;
-        uvs[vertex * 2 + 1] = z / 7;
+        uvs[vertex * 2] = x / 10;
+        uvs[vertex * 2 + 1] = z / 10;
 
         let pathDistance = Number.POSITIVE_INFINITY;
         for (const path of this.paths) {
@@ -287,6 +326,14 @@ export class WorldEnvironment {
         const exposedStone = Math.max(smoothstep(4, 14, y) * 0.65, smoothstep(0.28, 0.95, slope) * 0.86);
         blendedColor.copy(grassColor).lerp(dirtColor, Math.max(pathBlend, bankBlend));
         blendedColor.lerp(rockColor, exposedStone);
+        const snowCover = smoothstep(6, 14, y)
+          * (0.68 + 0.32 * Math.sin(x * 0.17 + z * 0.11) ** 2);
+        const groundVariation = (
+          Math.sin(x * 0.09 + Math.cos(z * 0.07)) * 0.025
+          + Math.cos(z * 0.13 - x * 0.055) * 0.018
+        );
+        blendedColor.lerp(snowColor, snowCover * 0.82);
+        blendedColor.multiplyScalar(1 + groundVariation);
         colors[vertex * 3] = blendedColor.r;
         colors[vertex * 3 + 1] = blendedColor.g;
         colors[vertex * 3 + 2] = blendedColor.b;
@@ -324,7 +371,7 @@ export class WorldEnvironment {
       metalness: 0,
     });
     this.materials.add(material);
-    void this.applyForestGroundMaterial(material);
+    if (this.location === 'floor1') void this.applyForestGroundMaterial(material);
     const terrain = new THREE.Mesh(geometry, material);
     terrain.receiveShadow = true;
     terrain.frustumCulled = false;
@@ -526,53 +573,68 @@ export class WorldEnvironment {
 
   private buildMountains(): void {
     const random = randomGenerator(45321);
-    for (let i = 0; i < 18; i++) {
-      const angle = (i / 18) * Math.PI * 2 + (random() - 0.5) * 0.12;
-      const radius = 48 + random() * 8;
+    const variants = Array.from({ length: 4 }, (_, index) => this.createMountainGeometry(index));
+    const nearPeaks: Array<Array<{ matrix: THREE.Matrix4; color: THREE.Color }>> = variants.map(() => []);
+    const distantPeaks: Array<Array<{ matrix: THREE.Matrix4; color: THREE.Color }>> = variants.map(() => []);
+    const addPeak = (
+      index: number,
+      count: number,
+      radiusMin: number,
+      radiusRange: number,
+      heightMin: number,
+      heightRange: number,
+      widthMin: number,
+      widthRange: number,
+      instances: Array<Array<{ matrix: THREE.Matrix4; color: THREE.Color }>>,
+    ): void => {
+      const angle = (index / count) * Math.PI * 2 + (random() - 0.5) * 0.14;
+      const radius = radiusMin + random() * radiusRange;
       const x = Math.cos(angle) * radius;
       const z = Math.sin(angle) * radius;
-      const geometry = new THREE.IcosahedronGeometry(1, 2);
-      const position = geometry.getAttribute('position');
-      const colors: number[] = [];
-      for (let vertex = 0; vertex < position.count; vertex++) {
-        const px = position.getX(vertex);
-        const py = position.getY(vertex);
-        const pz = position.getZ(vertex);
-        const noise = Math.sin(px * 7.1 + pz * 11.7 + i) * 0.065
-          + Math.cos(py * 12.3 - px * 8.2) * 0.035;
-        position.setXYZ(vertex, px * (1 + noise), py * (1 + noise), pz * (1 + noise));
-        const heightTint = smoothstep(-0.15, 0.72, py + noise);
-        const stone = new THREE.Color(0x68776e);
-        const summit = new THREE.Color(0xb1b5a8);
-        stone.lerp(summit, heightTint * 0.74);
-        colors.push(stone.r, stone.g, stone.b);
-      }
-      geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-      geometry.computeVertexNormals();
-      this.geometries.add(geometry);
-      const material = new THREE.MeshStandardMaterial({
-        color: new THREE.Color().setHSL(0.28 + random() * 0.04, 0.12, 0.9),
-        vertexColors: true,
-        flatShading: true,
-        roughness: 1,
-      });
-      this.materials.add(material);
-      const height = 18 + random() * 13;
-      const mountain = new THREE.Mesh(geometry, material);
-      mountain.position.set(x, this.getSurfaceHeight(x, z) + height * 0.33, z);
-      mountain.scale.set(10 + random() * 9, height, 12 + random() * 9);
-      mountain.rotation.y = random() * Math.PI;
-      mountain.castShadow = true;
-      mountain.receiveShadow = true;
-      this.scene.add(mountain);
+      const height = heightMin + random() * heightRange;
+      const position = new THREE.Vector3(x, this.getSurfaceHeight(x, z) + height * 0.28, z);
+      const scale = new THREE.Vector3(
+        widthMin + random() * widthRange,
+        height,
+        widthMin + random() * widthRange,
+      );
+      const rotation = new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        random() * Math.PI,
+      );
+      const matrix = new THREE.Matrix4().compose(position, rotation, scale);
+      const color = new THREE.Color().setHSL(0.56 + random() * 0.035, 0.09, 0.9 + random() * 0.06);
+      instances[index % variants.length].push({ matrix, color });
+    };
+
+    for (let i = 0; i < 18; i++) {
+      addPeak(i, 18, 48, 8, 18, 13, 10, 9, nearPeaks);
     }
+    for (let i = 0; i < 30; i++) {
+      addPeak(i, 30, 82, 27, 30, 34, 20, 25, distantPeaks);
+    }
+
+    const mountainMaterial = new THREE.MeshStandardMaterial({
+      color: 0xe7ebeb,
+      vertexColors: true,
+      flatShading: true,
+      roughness: 1,
+    });
+    this.materials.add(mountainMaterial);
+    variants.forEach((geometry, variant) => {
+      this.geometries.add(geometry);
+      this.addMountainInstances(geometry, mountainMaterial, nearPeaks[variant], true);
+      this.addMountainInstances(geometry, mountainMaterial, distantPeaks[variant], false);
+    });
 
     const skyGeometry = new THREE.SphereGeometry(280, 24, 16);
     const skyColors: number[] = [];
     const skyPosition = skyGeometry.getAttribute('position');
     for (let i = 0; i < skyPosition.count; i++) {
       const height = smoothstep(-0.04, 0.72, skyPosition.getY(i) / 280);
-      const color = new THREE.Color(0x93a9bd).lerp(new THREE.Color(0x657f9a), height * 0.82);
+      const horizon = new THREE.Color(0x87939a);
+      const zenith = new THREE.Color(0x53626c);
+      const color = horizon.lerp(zenith, height * 0.78);
       skyColors.push(color.r, color.g, color.b);
     }
     skyGeometry.setAttribute('color', new THREE.Float32BufferAttribute(skyColors, 3));
@@ -587,6 +649,152 @@ export class WorldEnvironment {
     const sky = new THREE.Mesh(skyGeometry, skyMaterial);
     sky.frustumCulled = false;
     this.scene.add(sky);
+
+    this.cloudTexture = this.createCloudTexture();
+    const cloudMaterial = new THREE.MeshBasicMaterial({
+      color: 0xadb8be,
+      map: this.cloudTexture,
+      transparent: true,
+      opacity: 0.48,
+      depthWrite: false,
+      side: THREE.BackSide,
+      fog: false,
+    });
+    this.materials.add(cloudMaterial);
+    const clouds = new THREE.Mesh(new THREE.SphereGeometry(279, 24, 16), cloudMaterial);
+    clouds.frustumCulled = false;
+    this.trackObject(clouds);
+    this.scene.add(clouds);
+
+    const mistMaterial = new THREE.MeshBasicMaterial({
+      color: 0xa9b8bf,
+      map: this.cloudTexture,
+      transparent: true,
+      opacity: 0.12,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      fog: false,
+    });
+    this.materials.add(mistMaterial);
+    const mistGeometry = new THREE.PlaneGeometry(150, 25);
+    this.geometries.add(mistGeometry);
+    for (const [x, y, z, rotation, scale] of [
+      [0, 7, -8, 0.08, 1],
+      [-9, 6, -29, -0.13, 0.82],
+    ]) {
+      const mist = new THREE.Mesh(mistGeometry, mistMaterial);
+      mist.position.set(x, y, z);
+      mist.rotation.y = rotation;
+      mist.scale.setScalar(scale);
+      mist.frustumCulled = false;
+      this.scene.add(mist);
+    }
+  }
+
+  private createMountainGeometry(seed: number): THREE.BufferGeometry {
+    const geometry = new THREE.IcosahedronGeometry(1, 2);
+    const positions = geometry.getAttribute('position');
+    const colors = new Float32Array(positions.count * 3);
+    const rock = new THREE.Color(0x58636b);
+    const snow = new THREE.Color(0xc8d1d2);
+    const surface = new THREE.Color();
+
+    for (let vertex = 0; vertex < positions.count; vertex++) {
+      const x = positions.getX(vertex);
+      const y = positions.getY(vertex);
+      const z = positions.getZ(vertex);
+      const noise = Math.sin(x * 7.1 + z * 11.7 + seed * 1.7) * 0.065
+        + Math.cos(y * 12.3 - x * 8.2 + seed) * 0.035;
+      positions.setXYZ(vertex, x * (1 + noise), y * (1 + noise), z * (1 + noise));
+      const snowline = smoothstep(0.16 + seed * 0.015, 0.78 + seed * 0.012, y + noise);
+      surface.copy(rock).lerp(snow, snowline * 0.92);
+      colors[vertex * 3] = surface.r;
+      colors[vertex * 3 + 1] = surface.g;
+      colors[vertex * 3 + 2] = surface.b;
+    }
+    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingSphere();
+    return geometry;
+  }
+
+  private addMountainInstances(
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material,
+    instances: Array<{ matrix: THREE.Matrix4; color: THREE.Color }>,
+    castShadow: boolean,
+  ): void {
+    if (instances.length === 0) return;
+    const mesh = new THREE.InstancedMesh(geometry, material, instances.length);
+    instances.forEach(({ matrix, color }, index) => {
+      mesh.setMatrixAt(index, matrix);
+      mesh.setColorAt(index, color);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    mesh.computeBoundingSphere();
+    mesh.castShadow = castShadow;
+    mesh.receiveShadow = castShadow;
+    this.scene.add(mesh);
+  }
+
+  private createCloudTexture(): THREE.DataTexture {
+    const width = 128;
+    const height = 64;
+    const pixels = new Uint8Array(width * height * 4);
+    const random = randomGenerator(81357);
+    const octaves = [
+      { columns: 4, rows: 2, weight: 0.46, values: new Float32Array(4 * 2) },
+      { columns: 8, rows: 4, weight: 0.27, values: new Float32Array(8 * 4) },
+      { columns: 16, rows: 8, weight: 0.17, values: new Float32Array(16 * 8) },
+      { columns: 32, rows: 16, weight: 0.1, values: new Float32Array(32 * 16) },
+    ];
+    for (const octave of octaves) {
+      for (let index = 0; index < octave.values.length; index++) octave.values[index] = random();
+    }
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let value = 0;
+        for (const octave of octaves) {
+          const sampleX = (x / width) * octave.columns;
+          const sampleY = (y / height) * octave.rows;
+          const x0 = Math.floor(sampleX);
+          const y0 = Math.floor(sampleY);
+          const x1 = (x0 + 1) % octave.columns;
+          const y1 = (y0 + 1) % octave.rows;
+          const tx = THREE.MathUtils.smoothstep(sampleX - x0, 0, 1);
+          const ty = THREE.MathUtils.smoothstep(sampleY - y0, 0, 1);
+          const top = THREE.MathUtils.lerp(
+            octave.values[y0 * octave.columns + x0],
+            octave.values[y0 * octave.columns + x1],
+            tx,
+          );
+          const bottom = THREE.MathUtils.lerp(
+            octave.values[y1 * octave.columns + x0],
+            octave.values[y1 * octave.columns + x1],
+            tx,
+          );
+          value += THREE.MathUtils.lerp(top, bottom, ty) * octave.weight;
+        }
+        const alpha = smoothstep(0.46, 0.68, value) * 220;
+        const offset = (y * width + x) * 4;
+        pixels[offset] = 255;
+        pixels[offset + 1] = 255;
+        pixels[offset + 2] = 255;
+        pixels[offset + 3] = alpha;
+      }
+    }
+
+    const texture = new THREE.DataTexture(pixels, width, height, THREE.RGBAFormat);
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    texture.magFilter = THREE.LinearFilter;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.generateMipmaps = true;
+    texture.needsUpdate = true;
+    this.textures.add(texture);
+    return texture;
   }
 
   private buildForest(): void {
@@ -611,6 +819,7 @@ export class WorldEnvironment {
     const pineLight = this.createWindMaterial(this.assets.materials.leavesLight);
     const fernMaterial = this.createWindMaterial(this.assets.materials.leavesLight);
     const grassMaterial = this.createWindMaterial(this.assets.materials.grass);
+    const frostColor = new THREE.Color(0xb9c6c7);
     const batches = new Map<string, Map<string, InstanceSpec[]>>();
     const add = (kind: string, x: number, z: number, spec: InstanceSpec): void => {
       const key = chunkKey(x, z);
@@ -654,11 +863,13 @@ export class WorldEnvironment {
             ];
         for (const [offsetX, offsetY, offsetZ, crownSize] of crowns) {
           const crownMaterial = random() < 0.38 ? 'leafLight' : 'leafDark';
+          const leafColor = new THREE.Color().setHSL(0.27 + random() * 0.04, 0.28, 0.38 + random() * 0.08);
+          leafColor.lerp(frostColor, smoothstep(5, 12, ground) * (0.32 + random() * 0.38));
           add(isDistant ? 'leafLod' : crownMaterial, x, z, {
             position: new THREE.Vector3(x + offsetX * size, ground + offsetY * size, z + offsetZ * size),
             rotation: new THREE.Euler(0, yaw, 0),
             scale: new THREE.Vector3(crownSize * size, crownSize * size * 0.9, crownSize * size),
-            color: new THREE.Color().setHSL(0.27 + random() * 0.04, 0.28, 0.38 + random() * 0.08),
+            color: leafColor,
           });
         }
       } else {
@@ -933,6 +1144,51 @@ export class WorldEnvironment {
     rune.position.set(center.x, center.y + 1.7, center.z);
     this.scene.add(rune);
 
+    const runeGeometry = new THREE.BufferGeometry();
+    runeGeometry.setAttribute('position', new THREE.Float32BufferAttribute([
+      -0.34, -0.19, 0, -0.34, 0.19, 0,
+      -0.34, 0.19, 0, 0, 0, 0,
+      0, 0, 0, 0.34, 0.19, 0,
+      0.34, 0.19, 0, 0.34, -0.19, 0,
+      0, 0, 0, 0, -0.27, 0,
+      -0.34, -0.19, 0, 0, -0.27, 0,
+      0, -0.27, 0, 0.34, -0.19, 0,
+    ], 3));
+    const runeMaterial = new THREE.LineBasicMaterial({ color: 0x464b49, transparent: true, opacity: 0.9 });
+    const runeMark = new THREE.LineSegments(runeGeometry, runeMaterial);
+    runeMark.position.set(center.x, center.y + 3.72, center.z - 2.28);
+    this.geometries.add(runeGeometry);
+    this.materials.add(runeMaterial);
+    this.scene.add(runeMark);
+
+    const torch = new THREE.Group();
+    torch.position.set(center.x + 3.1, center.y + 1.1, center.z - 2.18);
+    const handleGeometry = new THREE.CylinderGeometry(0.055, 0.075, 0.68, 6);
+    const handle = new THREE.Mesh(handleGeometry, this.assets.materials.bark);
+    handle.position.y = 0.22;
+    torch.add(handle);
+    const flameMaterial = new THREE.MeshStandardMaterial({
+      color: 0xb65a30,
+      emissive: 0x8b2f12,
+      emissiveIntensity: 1.8,
+      roughness: 0.7,
+    });
+    this.materials.add(flameMaterial);
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.48, 6), flameMaterial);
+    flame.position.y = 0.69;
+    torch.add(flame);
+    const flameCore = new THREE.Mesh(
+      new THREE.ConeGeometry(0.075, 0.3, 5),
+      new THREE.MeshBasicMaterial({ color: 0xffd49a }),
+    );
+    flameCore.position.y = 0.63;
+    torch.add(flameCore);
+    this.trackObject(torch);
+    this.scene.add(torch);
+    this.warmLight = new THREE.PointLight(0xffa15c, 0.78, 9, 2);
+    this.warmLight.position.set(torch.position.x, torch.position.y + 0.72, torch.position.z);
+    this.scene.add(this.warmLight);
+
     const rubbleGeometry = new THREE.DodecahedronGeometry(1, 0);
     this.geometries.add(rubbleGeometry);
     for (let i = 0; i < 17; i++) {
@@ -1104,14 +1360,168 @@ export class WorldEnvironment {
     this.scene.add(camp);
   }
 
+  private createArchitectureMaterial(color: number, roughness = 0.86, metalness = 0.08): THREE.MeshStandardMaterial {
+    const material = new THREE.MeshStandardMaterial({ color, roughness, metalness });
+    this.materials.add(material);
+    return material;
+  }
+
+  private addArchitectureMesh<T extends THREE.BufferGeometry, M extends THREE.Material>(
+    geometry: T,
+    material: M,
+    x: number,
+    y: number,
+    z: number,
+  ): THREE.Mesh<T, M> {
+    const mesh = new THREE.Mesh<T, M>(geometry, material);
+    mesh.position.set(x, y, z);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.trackObject(mesh);
+    this.scene.add(mesh);
+    return mesh;
+  }
+
+  private buildSanctuary(): void {
+    const stone = this.createArchitectureMaterial(0x656b69, 0.92);
+    const wornStone = this.createArchitectureMaterial(0x817966, 0.9);
+    const roof = this.createArchitectureMaterial(0x343b3c, 0.7, 0.18);
+    const platformY = this.getSurfaceHeight(0, 1) + 0.03;
+    this.addArchitectureMesh(new THREE.CylinderGeometry(17, 18, 0.12, 32), stone, 0, platformY, 1);
+    this.addArchitectureMesh(new THREE.CylinderGeometry(9.4, 9.8, 0.08, 32), wornStone, 0, platformY + 0.1, 1);
+
+    for (const [x, z] of [[-13, -13], [13, -13], [-13, 14], [13, 14]]) {
+      const ground = this.getSurfaceHeight(x, z);
+      this.addArchitectureMesh(new THREE.CylinderGeometry(1.7, 2.2, 8, 12), stone, x, ground + 4, z);
+      this.addArchitectureMesh(new THREE.CylinderGeometry(0.35, 1.95, 2.7, 12), roof, x, ground + 9.25, z);
+      this.addArchitectureMesh(new THREE.BoxGeometry(1.25, 2.2, 0.12), roof, x, ground + 2.1, z + 1.77);
+    }
+
+    const portalColors = [0x9ac4ff, 0xef7945, 0x67b9d8];
+    for (const [index, x] of [-8, 0, 8].entries()) {
+      const z = -5;
+      const ground = this.getSurfaceHeight(x, z);
+      this.addArchitectureMesh(new THREE.BoxGeometry(0.46, 3.2, 0.52), wornStone, x - 1.55, ground + 1.6, z);
+      this.addArchitectureMesh(new THREE.BoxGeometry(0.46, 3.2, 0.52), wornStone, x + 1.55, ground + 1.6, z);
+      this.addArchitectureMesh(new THREE.BoxGeometry(3.55, 0.48, 0.6), stone, x, ground + 3.25, z);
+      const frame = this.addArchitectureMesh(
+        new THREE.TorusGeometry(1.05, 0.075, 10, 36),
+        new THREE.MeshStandardMaterial({
+          color: portalColors[index],
+          emissive: portalColors[index],
+          emissiveIntensity: 1.25,
+          roughness: 0.36,
+          metalness: 0.24,
+          transparent: true,
+          opacity: 0.88,
+        }),
+        x,
+        ground + 1.55,
+        z - 0.08,
+      );
+      this.materials.add(frame.material);
+    }
+
+    const hallGround = this.getSurfaceHeight(0, -23);
+    this.addArchitectureMesh(new THREE.BoxGeometry(16, 9, 2.2), stone, 0, hallGround + 4.5, -24);
+    this.addArchitectureMesh(new THREE.BoxGeometry(18, 1.4, 3.2), roof, 0, hallGround + 9.5, -24);
+    for (const x of [-5.2, 0, 5.2]) {
+      this.addArchitectureMesh(new THREE.BoxGeometry(1.05, 5.2, 0.3), roof, x, hallGround + 3.5, -22.85);
+    }
+  }
+
+  private buildAshenSanctuary(): void {
+    const basalt = this.createArchitectureMaterial(0x292a2b, 0.93, 0.12);
+    const cutStone = this.createArchitectureMaterial(0x484441, 0.86, 0.18);
+    const lava = this.createArchitectureMaterial(0xff6a24, 0.32, 0.08);
+    lava.emissive.set(0xff3d12);
+    lava.emissiveIntensity = 2.1;
+    for (const x of [-15, -10, 10, 15]) {
+      const z = -13 - (Math.abs(x) > 12 ? 7 : 0);
+      const ground = this.getSurfaceHeight(x, z);
+      this.addArchitectureMesh(new THREE.CylinderGeometry(0.7, 1.3, 5.6, 8), basalt, x, ground + 2.8, z);
+      this.addArchitectureMesh(new THREE.BoxGeometry(2.2, 0.42, 2.2), cutStone, x, ground + 5.65, z);
+    }
+    this.addArchitectureMesh(
+      new THREE.CylinderGeometry(12, 13, 0.14, 32),
+      basalt,
+      0,
+      this.getSurfaceHeight(0, -18) + 0.05,
+      -18,
+    );
+    const lavaCurves = [
+      [[-24, 0, 7], [-17, 0, 4], [-13, 0, -4], [-11, 0, -16]],
+      [[24, 0, 7], [17, 0, 4], [13, 0, -4], [11, 0, -16]],
+    ];
+    for (const points of lavaCurves) {
+      const curve = new THREE.CatmullRomCurve3(points.map(([x, , z]) =>
+        new THREE.Vector3(x, this.getSurfaceHeight(x, z) + 0.16, z),
+      ));
+      this.addArchitectureMesh(new THREE.TubeGeometry(curve, 56, 0.72, 10, false), lava, 0, 0, 0);
+    }
+    this.addReturnPortal();
+  }
+
+  private buildDragonThrone(): void {
+    const fortressStone = this.createArchitectureMaterial(0x4b5051, 0.9, 0.12);
+    const iron = this.createArchitectureMaterial(0x272d30, 0.55, 0.72);
+    this.addArchitectureMesh(
+      new THREE.BoxGeometry(10, 0.12, 39),
+      fortressStone,
+      0,
+      this.getSurfaceHeight(0, -13) + 0.04,
+      -12,
+    );
+    for (const x of [-5.25, 5.25]) {
+      for (let z = 5; z >= -30; z -= 5) {
+        const ground = this.getSurfaceHeight(x, z);
+        this.addArchitectureMesh(new THREE.BoxGeometry(0.55, 1.4, 0.62), iron, x, ground + 0.7, z);
+      }
+    }
+    for (const [x, z] of [[-12, -28], [12, -28]]) {
+      const ground = this.getSurfaceHeight(x, z);
+      this.addArchitectureMesh(new THREE.BoxGeometry(4.5, 13, 4.5), fortressStone, x, ground + 6.5, z);
+      this.addArchitectureMesh(new THREE.ConeGeometry(3.3, 5.2, 8), iron, x, ground + 15.5, z);
+      this.addArchitectureMesh(new THREE.BoxGeometry(5.5, 0.8, 6), iron, x, ground + 13.2, z);
+    }
+    const gateGround = this.getSurfaceHeight(0, -33);
+    this.addArchitectureMesh(new THREE.BoxGeometry(18, 10, 2), fortressStone, 0, gateGround + 5, -33);
+    this.addArchitectureMesh(new THREE.BoxGeometry(20, 1.2, 3), iron, 0, gateGround + 10.4, -33);
+    this.addArchitectureMesh(new THREE.BoxGeometry(6.2, 7.2, 2.5), iron, 0, gateGround + 3.8, -31.8);
+    this.addReturnPortal();
+  }
+
+  private addReturnPortal(): void {
+    const x = 0;
+    const z = 7;
+    const ground = this.getSurfaceHeight(x, z);
+    const portal = this.addArchitectureMesh(
+      new THREE.TorusGeometry(1.25, 0.09, 10, 40),
+      new THREE.MeshStandardMaterial({
+        color: 0x91c6c1,
+        emissive: 0x397d78,
+        emissiveIntensity: 1.35,
+        roughness: 0.4,
+        metalness: 0.28,
+      }),
+      x,
+      ground + 1.55,
+      z,
+    );
+    this.materials.add(portal.material);
+  }
+
   private buildLighting(): void {
+    const skyColor = this.location === 'floor2' ? 0x9c7566 : this.location === 'floor3' ? 0xa2b4c0 : 0xc8dcf5;
+    const groundColor = this.location === 'floor2' ? 0x302a29 : this.location === 'floor3' ? 0x3e454b : 0x493a36;
     this.hemisphere = new THREE.HemisphereLight(
-      0xc8dcf5,
-      0x493a36,
+      skyColor,
+      groundColor,
       this.graphics.hemisphereLightIntensity,
     );
     this.scene.add(this.hemisphere);
-    this.sun = new THREE.DirectionalLight(0xffd5a1, this.graphics.directionalLightIntensity);
+    const sunlight = this.location === 'floor2' ? 0xff8a4b : this.location === 'floor3' ? 0xc5d8e6 : 0xffd5a1;
+    this.sun = new THREE.DirectionalLight(sunlight, this.graphics.directionalLightIntensity);
     this.sun.position.set(-28, 52, 25);
     this.sun.castShadow = this.graphics.shadows;
     this.sun.shadow.mapSize.set(this.graphics.shadowMapSize, this.graphics.shadowMapSize);
@@ -1129,8 +1539,8 @@ export class WorldEnvironment {
 
   private buildParticles(): void {
     const random = randomGenerator(27183);
-    const positions = new Float32Array(180 * 3);
-    for (let i = 0; i < 180; i++) {
+    const positions = new Float32Array(220 * 3);
+    for (let i = 0; i < 220; i++) {
       const angle = random() * Math.PI * 2;
       const radius = 5 + random() * 45;
       positions[i * 3] = Math.cos(angle) * radius;
@@ -1141,10 +1551,10 @@ export class WorldEnvironment {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.geometries.add(geometry);
     const material = new THREE.PointsMaterial({
-      color: 0xe7dcb8,
-      size: 0.09,
+      color: this.location === 'floor2' ? 0x97766a : this.location === 'floor3' ? 0xc9d2d8 : 0xdce9f1,
+      size: this.location === 'floor2' ? 0.09 : 0.12,
       transparent: true,
-      opacity: 0.32,
+      opacity: this.location === 'floor2' ? 0.3 : 0.42,
       sizeAttenuation: true,
       depthWrite: false,
     });

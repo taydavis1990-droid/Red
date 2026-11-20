@@ -363,20 +363,29 @@ export class Player {
     this.damagePending = true;
   }
 
-  restore(): void {
+  restore(position = new THREE.Vector3(0, 0, 13)): void {
     this.health = this.character.attributes.health;
     this.stamina = this.character.attributes.stamina;
     this.mana = this.character.attributes.mana;
+    this.teleport(position);
     this.model.rotation.z = 0;
-    const bodyHeight = this.capsuleHalfHeight + this.capsuleRadius;
-    const groundHeight = this.groundHeightAt(0, 13);
-    this.body.setTranslation({ x: 0, y: groundHeight + bodyHeight, z: 13 }, true);
-    this.model.position.set(0, groundHeight, 13);
-    this.verticalSpeed = 0;
-    this.blocking = false;
     this.attackEffectRemaining = 0;
     this.attackTrail.visible = false;
     this.firstPersonAttackTrail.visible = false;
+  }
+
+  teleport(position: THREE.Vector3): void {
+    this.model.rotation.z = 0;
+    const bodyHeight = this.capsuleHalfHeight + this.capsuleRadius;
+    const groundHeight = this.groundHeightAt(position.x, position.z);
+    this.body.setTranslation({
+      x: position.x,
+      y: groundHeight + bodyHeight,
+      z: position.z,
+    }, true);
+    this.model.position.set(position.x, groundHeight, position.z);
+    this.verticalSpeed = 0;
+    this.blocking = false;
   }
 
   get attributes(): Attributes {

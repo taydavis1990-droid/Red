@@ -1,6 +1,6 @@
 import type { Creature } from '../creatures/Creature';
 import { isGraphicsQuality, type GraphicsQuality } from '../core/GraphicsConfig';
-import { RACE_ATTRIBUTES, type CharacterData, type Race } from '../core/types';
+import { RACE_ATTRIBUTES, type CharacterData, type GameLocation, type Race, type TowerProgression } from '../core/types';
 
 export interface UIActions {
   start: (race: Race, name: string) => void;
@@ -38,6 +38,16 @@ interface GameUIState {
   spiritCooldown: number;
   graphicsQuality: GraphicsQuality;
   landmarks: LandmarkStatus[];
+  location: GameLocation;
+  tower: TowerProgression;
+  boss?: {
+    id: string;
+    name: string;
+    health: number;
+    maxHealth: number;
+    phase: number;
+    visualStatus: string;
+  };
 }
 
 const GAME_PANELS: Array<{ id: GamePanelName; label: string; icon: string }> = [
@@ -339,6 +349,7 @@ export class UI {
         </section>
         <div class="hud-header-actions">
           <div class="companion-chip" id="companion-status"><span aria-hidden="true">◈</span><span>COMPANION <b id="companion-value">NONE</b></span></div>
+          <div class="companion-chip tower-location"><span aria-hidden="true">⌂</span><span id="tower-location-value">THE ETERNAL SANCTUARY</span></div>
           <button type="button" class="hud-icon-button camera-button" data-action="camera" aria-label="Switch camera">
             <span class="hud-button-icon" aria-hidden="true">◉</span><span class="camera-label">THIRD PERSON</span>
           </button>
@@ -356,6 +367,12 @@ export class UI {
         <button type="button" data-open-panel="map"><span aria-hidden="true">⌖</span><small>MAP</small></button>
         <button type="button" data-open-panel="settings"><span aria-hidden="true">⚙</span><small>SETTINGS</small></button>
       </nav>
+      <section id="boss-status" class="boss-status hidden" aria-live="polite">
+        <div><span id="boss-name"></span><b id="boss-phase"></b></div>
+        <div class="boss-health-track"><i id="boss-health-bar"></i></div>
+        <small id="boss-model-status" class="boss-model-status"></small>
+        <small id="boss-health-value"></small>
+      </section>
       <div class="interaction-prompt" id="interaction-prompt" role="status" aria-live="polite"></div>
       <div class="desktop-hints"><span>WASD MOVE</span><span>SHIFT SPRINT</span><span>SPACE JUMP</span><span>CLICK ATTACK</span><span>E USE</span><span>Q SPIRIT</span></div>
       <div class="touch-controls">
@@ -380,19 +397,7 @@ export class UI {
     });
   }
 
-  update(data: {
-    character: CharacterData;
-    health: number;
-    stamina: number;
-    mana: number;
-    camera: string;
-    prompt: string;
-    companion: Creature | null;
-    spiritActive: boolean;
-    spiritCooldown: number;
-    graphicsQuality: GraphicsQuality;
-    landmarks: LandmarkStatus[];
-  }): void {
+  update(data: GameUIState): void {
     this.currentCharacter = data.character;
     this.latestUpdate = data;
     this.graphicsQuality = data.graphicsQuality;
@@ -418,6 +423,22 @@ export class UI {
     setBar('#xp-bar', data.character.xp, xpRequired);
     setText('#interaction-prompt', data.prompt);
     setText('#companion-value', data.companion ? `WOLF · ${Math.ceil(data.companion.health)} HP` : 'NONE');
+    const locationLabels: Record<GameLocation, string> = {
+      hub: 'THE ETERNAL SANCTUARY',
+      floor1: 'FLOOR 1 · FORSAKEN WILDS',
+      floor2: 'FLOOR 2 · ASHEN SANCTUARY',
+      floor3: "FLOOR 3 · DRAGON'S THRONE",
+    };
+    setText('#tower-location-value', locationLabels[data.location]);
+    const bossStatus = this.hud.querySelector<HTMLElement>('#boss-status');
+    bossStatus?.classList.toggle('hidden', !data.boss);
+    if (data.boss) {
+      setText('#boss-name', data.boss.name);
+      setText('#boss-phase', `PHASE ${data.boss.phase}`);
+      setText('#boss-model-status', data.boss.visualStatus);
+      setText('#boss-health-value', `${Math.ceil(data.boss.health)} / ${data.boss.maxHealth}`);
+      setBar('#boss-health-bar', data.boss.health, data.boss.maxHealth);
+    }
     for (const cameraButton of this.buttons.get('camera') ?? []) {
       cameraButton.title = data.camera === 'first-person' ? 'First person · V' : 'Third person · V';
       const label = cameraButton.querySelector<HTMLElement>('.camera-label');
@@ -499,7 +520,7 @@ export class UI {
     const panelState = this.activePanel === 'character'
       ? update ? [Math.ceil(update.health), Math.ceil(update.stamina), Math.ceil(update.mana)] : []
       : this.activePanel === 'quests'
-        ? [update?.prompt, update?.landmarks.map(({ name, discovered }) => [name, discovered])]
+        ? [update?.prompt, update?.landmarks.map(({ name, discovered }) => [name, discovered]), update?.tower]
         : this.activePanel === 'map'
           ? [update?.landmarks.map(({ name, discovered }) => [name, discovered])]
           : this.activePanel === 'companion'
@@ -562,7 +583,17 @@ export class UI {
         ? `<div class="companion-detail"><span class="companion-emblem" aria-hidden="true">◈</span><div><span>TRAVELING COMPANION</span><h3>${this.escape(update.companion.kind.toUpperCase())}</h3><p>${Math.ceil(update.companion.health)} HP · Following your path</p></div></div>`
         : `<div class="panel-empty-state"><span aria-hidden="true">◈</span><h3>No companion nearby</h3><p>Weakened wolves may be befriended in the valley. Your companion status will appear here.</p><small>COMPANIONS · ${character.companions}</small></div>`,
       quests: `
-        <div class="panel-intro"><span>EXPLORATION TRACKER</span><p>${update?.prompt ? this.escape(update.prompt) : 'Explore the Forgotten Valley and uncover its landmarks.'}</p></div>
+        <div class="panel-intro"><span>TOWER PROGRESSION</span><p>${update?.prompt ? this.escape(update.prompt) : 'Travel between the sanctuary and the unlocked floors.'}</p></div>
+        ${update ? `<div class="tower-progress-list">${[
+          ['ancient-wolf', 'Floor 1 · Ancient Wolf'],
+          ['eternal-phoenix', 'Floor 2 · Eternal Phoenix'],
+          ['eternal-dragon', "Floor 3 · Eternal Dragon"],
+        ].map(([boss, label], index) => {
+          const floor = index + 1;
+          const defeated = update.tower.defeatedBosses.includes(boss);
+          const unlocked = update.tower.unlockedFloors.includes(floor);
+          return `<div class="panel-list-row"><span class="panel-item-icon" aria-hidden="true">${defeated ? '◆' : '◇'}</span><span>${label}</span><small>${defeated ? 'DEFEATED' : unlocked ? 'UNLOCKED' : 'SEALED'}</small></div>`;
+        }).join('')}</div>` : ''}
         <div class="journal-progress"><span>LANDMARKS DISCOVERED</span><b>${update?.landmarks.filter((landmark) => landmark.discovered).length ?? character.discoveredLocations.length} / ${update?.landmarks.length ?? 4}</b></div>
         ${itemList((update?.landmarks ?? []).map(({ name, discovered }) => `${discovered ? 'Discovered · ' : 'Unexplored · '}${name}`), 'Your journey into the valley has begun.', [], 'LANDMARK')}
       `,

@@ -39,9 +39,9 @@ export class CameraManager {
     }
     const distance = 6.8;
     this.offset.set(
-      -Math.sin(this.yaw) * Math.cos(this.pitch) * distance,
+      Math.sin(this.yaw) * Math.cos(this.pitch) * distance,
       2.45 - Math.sin(this.pitch) * distance,
-      -Math.cos(this.yaw) * Math.cos(this.pitch) * distance,
+      Math.cos(this.yaw) * Math.cos(this.pitch) * distance,
     );
     this.desiredPosition.copy(this.lookTarget).add(this.offset);
     if (!this.cameraInitialized) {
