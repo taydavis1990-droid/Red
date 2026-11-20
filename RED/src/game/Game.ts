@@ -10,6 +10,7 @@ import type { Creature } from '../creatures/Creature';
 import { createCharacterRig, type CharacterRig } from '../actors/CharacterRig';
 import { disposeActorModel } from '../actors/ActorGeometry';
 import { Player } from '../player/Player';
+import { getWeaponDamageMultiplier } from '../player/WeaponConfig';
 import { World } from '../world/World';
 import { UI } from '../ui/UI';
 
@@ -95,6 +96,7 @@ export class Game {
       spirit: () => { this.input.spiritPressed = true; },
       camera: () => { this.input.cameraPressed = true; },
       toggleInventory: () => this.toggleInventory(),
+      equipItem: (item) => { void this.equipItem(item); },
       setGraphicsQuality: (quality) => this.setGraphicsQuality(quality),
       setBlocking: (blocked) => { this.blockTouch = blocked; },
       setSprinting: (sprinting) => { this.sprintTouch = sprinting; },
@@ -340,7 +342,8 @@ export class Game {
       this.ui.toastMessage('Miss · face a creature and strike within range.');
       return;
     }
-    const damage = [16, 20, 28][sequence] + player.attributes.strength * 0.65;
+    const damage = ([16, 20, 28][sequence] + player.attributes.strength * 0.65)
+      * getWeaponDamageMultiplier(player.character.equipment);
     this.pendingAttack = {
       target: target.creature,
       damage,
@@ -539,9 +542,10 @@ export class Game {
     const character = player?.character;
     if (!character || !creature.bossId || character.tower.defeatedBosses.includes(creature.bossId)) return;
     character.tower.defeatedBosses.push(creature.bossId);
-    if (creature.bossId === 'ancient-wolf' && !character.tower.unlockedFloors.includes(2)) {
-      character.tower.unlockedFloors.push(2);
-      character.inventory.push('Ancient Wolf Sigil');
+    if (creature.bossId === 'ancient-wolf') {
+      if (!character.tower.unlockedFloors.includes(2)) character.tower.unlockedFloors.push(2);
+      if (!character.inventory.includes('Ancient Wolf Sigil')) character.inventory.push('Ancient Wolf Sigil');
+      if (!character.inventory.includes('Ornate Sword')) character.inventory.push('Ornate Sword');
     } else if (creature.bossId === 'eternal-phoenix' && !character.tower.unlockedFloors.includes(3)) {
       character.tower.unlockedFloors.push(3);
       character.inventory.push('Phoenix Ember');
@@ -551,7 +555,9 @@ export class Game {
     this.addExperience(300);
     const message = creature.bossId === 'eternal-dragon'
       ? 'Eternal Dragon defeated · the tower is cleared.'
-      : `${creature.bossName} defeated · the next tower portal awakens.`;
+      : creature.bossId === 'ancient-wolf'
+        ? 'Ancient Wolf defeated · Floor 2 unlocked · Ornate Sword recovered.'
+        : `${creature.bossName} defeated · the next tower portal awakens.`;
     await this.persist();
     if (!this.disposed && this.playing && this.player?.character === character) {
       this.pendingBossReturn = message;
@@ -637,6 +643,24 @@ export class Game {
   private toggleInventory(): void {
     this.ui.toggleInventory();
     this.input.inventoryPressed = false;
+  }
+
+  private async equipItem(item: string): Promise<void> {
+    const player = this.player;
+    if (!player || !player.character.inventory.includes(item)) {
+      this.ui.toastMessage('That weapon is not in your pack.');
+      return;
+    }
+    try {
+      const equipped = await player.equipWeapon(item);
+      if (!equipped || this.player !== player) return;
+      player.character.equipment = [item];
+      await this.persist();
+      this.ui.toastMessage(`${item} equipped.`);
+    } catch (error) {
+      console.error(`Could not equip "${item}".`, error);
+      this.ui.toastMessage(`${item} could not be equipped · the current weapon remains ready.`);
+    }
   }
 
   private transitionTo(location: GameLocation): void {

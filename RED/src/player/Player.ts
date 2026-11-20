@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import * as RAPIER from '@dimforge/rapier3d-compat';
-import type { AssetManager } from '../core/AssetManager';
+import type { AssetManager, LoadedModel } from '../core/AssetManager';
 import type { Attributes, CharacterData } from '../core/types';
 import { PLAYER_CHARACTER_ASSETS } from '../actors/CharacterAssetConfig';
 import { CameraManager } from './CameraManager';
 import { createCharacterRig, type CharacterRig } from '../actors/CharacterRig';
 import { GLTFCharacterRig, type RiggedCharacterAssetConfig } from '../actors/GLTFCharacterRig';
 import { disposeActorModel } from '../actors/ActorGeometry';
+import { getWeaponAssetConfig } from './WeaponConfig';
 
 export class Player {
   readonly model = new THREE.Group();
@@ -27,6 +28,12 @@ export class Player {
   private firstPersonAttackTrail!: THREE.Mesh<THREE.TorusGeometry, THREE.MeshBasicMaterial>;
   private firstPersonWeapon!: THREE.Group;
   private attackTrailMaterial!: THREE.MeshBasicMaterial;
+  private firstPersonProceduralSword!: THREE.Group;
+  private defaultWeaponParts: THREE.Object3D[] = [];
+  private thirdPersonWeapon: { loaded: LoadedModel; root: THREE.Group } | null = null;
+  private firstPersonImportedWeapon: { loaded: LoadedModel; root: THREE.Group } | null = null;
+  private weaponLoadSequence = 0;
+  private equippedWeaponName: string | null = null;
   private attackEffectRemaining = 0;
   private attackSequence = 0;
   private elapsed = 0;
@@ -69,6 +76,7 @@ export class Player {
   private createModel(): void {
     this.visualRig = createCharacterRig(this.character.race);
     this.model.add(this.visualRig.model);
+    this.captureDefaultWeaponParts(this.visualRig.model);
     const actorConfig = PLAYER_CHARACTER_ASSETS[this.character.race];
     if (actorConfig && this.assets) void this.loadImportedModel(actorConfig, this.assets);
     this.attackTrailMaterial = new THREE.MeshBasicMaterial({
@@ -96,6 +104,11 @@ export class Player {
     this.camera.add(this.firstPersonAttackTrail);
     this.createFirstPersonWeapon();
     this.model.position.set(0, this.groundHeightAt(0, 13), 13);
+    const equippedWeapon = this.character.equipment.find((item) => item === 'Worn sword' || getWeaponAssetConfig(item))
+      ?? 'Worn sword';
+    void this.equipWeapon(equippedWeapon).catch((error: unknown) => {
+      console.error(`Could not load equipped weapon "${equippedWeapon}".`, error);
+    });
   }
 
   private async loadImportedModel(config: RiggedCharacterAssetConfig, assets: AssetManager): Promise<void> {
@@ -122,6 +135,8 @@ export class Player {
     this.model.remove(previousRig.model);
     this.visualRig = importedRig;
     this.model.add(importedRig.model);
+    this.captureDefaultWeaponParts(importedRig.model, config.weaponSocketName ?? 'WeaponSocket');
+    this.mountThirdPersonWeapon(importedRig.model, config.weaponSocketName ?? 'WeaponSocket');
     if (previousRig.dispose) previousRig.dispose();
     else disposeActorModel(previousRig.model);
   }
@@ -163,7 +178,11 @@ export class Player {
     const hilt = new THREE.Group();
     hilt.position.set(0.005, -0.08, -0.018);
     hilt.rotation.z = -0.12;
-    weapon.add(hilt);
+    const proceduralSword = new THREE.Group();
+    proceduralSword.name = 'DefaultFirstPersonWeapon';
+    this.firstPersonProceduralSword = proceduralSword;
+    weapon.add(proceduralSword);
+    proceduralSword.add(hilt);
 
     const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.027, 0.032, 0.19, 12), leather);
     grip.position.y = -0.095;
@@ -233,6 +252,112 @@ export class Player {
     const pommelInset = new THREE.Mesh(new THREE.SphereGeometry(0.018, 10, 8), darkSteel);
     pommelInset.position.set(0, -0.205, 0.04);
     hilt.add(pommelInset);
+  }
+
+  async equipWeapon(item: string): Promise<boolean> {
+    const config = getWeaponAssetConfig(item);
+    if (!config) {
+      if (item !== 'Worn sword') return false;
+      this.weaponLoadSequence++;
+      this.clearEquippedWeaponModels();
+      this.equippedWeaponName = item;
+      return true;
+    }
+    if (!this.assets) return false;
+    if (item === this.equippedWeaponName) return true;
+
+    const sequence = ++this.weaponLoadSequence;
+    const response = await fetch(this.assets.resolveAssetUrl(config.path), { method: 'HEAD' });
+    if (!response.ok) {
+      throw new Error(`Could not load weapon "${item}": HTTP ${response.status}.`);
+    }
+
+    const [thirdPerson, firstPerson] = await Promise.all([
+      this.assets.loadModel(config.path, () => new THREE.Group()),
+      this.assets.loadModel(config.path, () => new THREE.Group()),
+    ]);
+    const hasMeshes = (scene: THREE.Object3D): boolean => {
+      let found = false;
+      scene.traverse((object) => {
+        if (object instanceof THREE.Mesh) found = true;
+      });
+      return found;
+    };
+    if (!hasMeshes(thirdPerson.scene) || !hasMeshes(firstPerson.scene)) {
+      this.assets.releaseModel(thirdPerson.scene);
+      this.assets.releaseModel(firstPerson.scene);
+      throw new Error(`Weapon "${item}" contains no renderable meshes.`);
+    }
+    if (this.disposed || sequence !== this.weaponLoadSequence) {
+      this.assets.releaseModel(thirdPerson.scene);
+      this.assets.releaseModel(firstPerson.scene);
+      return false;
+    }
+
+    const createRoot = (loaded: LoadedModel, firstPersonView: boolean): THREE.Group => {
+      const bounds = new THREE.Box3().setFromObject(loaded.scene);
+      const size = bounds.getSize(new THREE.Vector3());
+      const center = bounds.getCenter(new THREE.Vector3());
+      if (!Number.isFinite(size.z) || size.z <= 0) {
+        throw new Error(`Weapon "${item}" has invalid length bounds.`);
+      }
+      const gripZ = config.gripEnd === 'min-z' ? bounds.min.z : bounds.max.z;
+      loaded.scene.position.set(-center.x, -center.y, -gripZ);
+      const root = new THREE.Group();
+      root.rotation.x = firstPersonView ? -config.thirdPersonRotationX : config.thirdPersonRotationX;
+      root.scale.setScalar(config.targetHeight / size.z);
+      root.position.y = config.targetHeight * (firstPersonView ? 0.2 : 0.16);
+      root.add(loaded.scene);
+      return root;
+    };
+
+    let thirdPersonRoot: THREE.Group;
+    let firstPersonRoot: THREE.Group;
+    try {
+      thirdPersonRoot = createRoot(thirdPerson, false);
+      firstPersonRoot = createRoot(firstPerson, true);
+    } catch (error) {
+      this.assets.releaseModel(thirdPerson.scene);
+      this.assets.releaseModel(firstPerson.scene);
+      throw error;
+    }
+
+    this.clearEquippedWeaponModels();
+    this.thirdPersonWeapon = { loaded: thirdPerson, root: thirdPersonRoot };
+    this.firstPersonImportedWeapon = { loaded: firstPerson, root: firstPersonRoot };
+    this.mountThirdPersonWeapon(this.visualRig.model);
+    this.firstPersonWeapon.add(firstPersonRoot);
+    this.firstPersonProceduralSword.visible = false;
+    this.equippedWeaponName = item;
+    return true;
+  }
+
+  private captureDefaultWeaponParts(rig: THREE.Object3D, socketName = 'WeaponSocket'): void {
+    const socket = rig.getObjectByName(socketName);
+    this.defaultWeaponParts = socket?.children.filter((child) => child.name === 'DefaultWeapon') ?? [];
+  }
+
+  private mountThirdPersonWeapon(rig: THREE.Object3D, socketName = 'WeaponSocket'): void {
+    if (!this.thirdPersonWeapon) return;
+    const socket = rig.getObjectByName(socketName);
+    if (!socket) return;
+    for (const part of this.defaultWeaponParts) part.visible = false;
+    socket.add(this.thirdPersonWeapon.root);
+  }
+
+  private clearEquippedWeaponModels(): void {
+    if (this.thirdPersonWeapon) {
+      this.thirdPersonWeapon.root.removeFromParent();
+      this.assets?.releaseModel(this.thirdPersonWeapon.loaded.scene);
+      this.thirdPersonWeapon = null;
+    }
+    if (this.firstPersonImportedWeapon) {
+      this.firstPersonImportedWeapon.root.removeFromParent();
+      this.assets?.releaseModel(this.firstPersonImportedWeapon.loaded.scene);
+      this.firstPersonImportedWeapon = null;
+    }
+    this.defaultWeaponParts.forEach((part) => { part.visible = true; });
+    if (this.firstPersonProceduralSword) this.firstPersonProceduralSword.visible = true;
   }
 
   update(
@@ -394,6 +519,8 @@ export class Player {
 
   dispose(): void {
     this.disposed = true;
+    this.weaponLoadSequence++;
+    this.clearEquippedWeaponModels();
     this.camera.remove(this.firstPersonAttackTrail);
     this.camera.remove(this.firstPersonWeapon);
     this.attackTrail.removeFromParent();

@@ -139,6 +139,17 @@ def glb_triangle_count(document):
     return triangle_count
 
 
+def glb_vertex_count(document):
+    accessors = document.get("accessors", [])
+    return sum(
+        accessors[position_index]["count"]
+        for mesh in document.get("meshes", [])
+        for primitive in mesh.get("primitives", [])
+        if (position_index := primitive.get("attributes", {}).get("POSITION")) is not None
+        and position_index < len(accessors)
+    )
+
+
 def main():
     args = parse_args()
     if args.max_texture_size < 0:
@@ -164,6 +175,8 @@ def main():
         export_materials="EXPORT",
         export_apply=False,
         export_keep_originals=False,
+        export_nla_strips=True,
+        export_force_sampling=True,
     )
     if "FINISHED" not in result or not os.path.isfile(output_path):
         raise RuntimeError("Blender's glTF exporter did not produce the requested GLB.")
@@ -195,6 +208,7 @@ def main():
         "blender_version": bpy.app.version_string,
         "file_size_bytes": os.path.getsize(output_path),
         "mesh_count": len(glb_document.get("meshes", [])),
+        "vertex_count": glb_vertex_count(glb_document),
         "face_count": glb_triangle_count(glb_document),
         "skin_count": len(glb_document.get("skins", [])),
         "skeleton_bone_count": len(joint_nodes),

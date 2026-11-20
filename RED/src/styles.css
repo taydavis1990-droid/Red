@@ -210,6 +210,8 @@ button { color: inherit; }
 .panel-intro p { margin: 6px 0 0; color: #c3c4b8; font-size: 12px; line-height: 1.5; }
 .panel-list { display: grid; }
 .panel-list-row { display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 46px; border-top: 1px solid rgba(218, 204, 169, .13); color: #ece6d7; font-size: 12px; }
+.panel-equip-button { padding: 6px 9px; border: 1px solid rgba(190, 166, 112, .42); border-radius: 3px; background: rgba(37, 43, 40, .9); color: #e5d39a; font-size: 9px; letter-spacing: .12em; cursor: pointer; }
+.panel-equip-button:hover, .panel-equip-button:focus-visible { border-color: #d7bd77; background: rgba(112, 91, 48, .24); }
 .panel-item-icon { color: #d4bd7e; font-size: 15px; }
 .panel-list-row small { color: #b9aa7d; font-size: 8px; letter-spacing: .1em; }
 .panel-empty, .panel-note { color: #b6b8ad; font-size: 11px; line-height: 1.55; }

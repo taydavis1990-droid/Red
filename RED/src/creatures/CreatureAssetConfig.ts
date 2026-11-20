@@ -11,10 +11,33 @@ export type CreatureAnimationState = 'idle' | 'walk' | 'run' | 'attack' | 'speci
 
 export const MONSTER_PREVIEW_ASSETS: readonly CreatureAssetConfig[] = [
   {
-    id: 'ancient-wolf',
-    label: 'Floor 1 - Ancient Wolf (Marsh Direwolf)',
+    id: 'ancient-wolf-rigged',
+    label: 'Floor 1 - Ancient Wolf (Rigged Wolf)',
+    path: 'assets/monsters/bosses/ancient-wolf/rigged-wolf.glb',
+    targetHeight: 2.45,
+    animationMap: {
+      idle: 'Wolf_Idle_',
+      walk: 'Wolf_Walk_cycle_',
+      run: 'Wolf_Run_Cycle_',
+    },
+  },
+  {
+    id: 'marsh-direwolf-reference',
+    label: 'Reference - Marsh Direwolf (static)',
     path: 'assets/monsters/bosses/ancient-wolf/marsh-direwolf.glb',
     targetHeight: 1.4,
+  },
+  {
+    id: 'tyrannosaurus-preview',
+    label: 'T-Rex (one embedded action · preview only)',
+    path: 'assets/monsters/enemies/tyrannosaurus.glb',
+    targetHeight: 4.1,
+  },
+  {
+    id: 'knight-preview',
+    label: 'Knight in Armor (static rig preview only)',
+    path: 'assets/characters/preview/knight-in-armor.glb',
+    targetHeight: 1.8,
   },
   {
     id: 'eternal-phoenix-optimized',
@@ -32,9 +55,14 @@ export const MONSTER_PREVIEW_ASSETS: readonly CreatureAssetConfig[] = [
 
 export const ANCIENT_WOLF_BOSS_ASSET: CreatureAssetConfig = {
   id: 'ancient-wolf',
-  label: 'Ancient Wolf (Marsh Direwolf)',
-  path: 'assets/monsters/bosses/ancient-wolf/marsh-direwolf.glb',
+  label: 'Ancient Wolf (Rigged Wolf)',
+  path: 'assets/monsters/bosses/ancient-wolf/rigged-wolf.glb',
   targetHeight: 2.45,
+  animationMap: {
+    idle: 'Wolf_Idle_',
+    walk: 'Wolf_Walk_cycle_',
+    run: 'Wolf_Run_Cycle_',
+  },
 };
 
 export const ETERNAL_PHOENIX_BOSS_ASSET: CreatureAssetConfig = {

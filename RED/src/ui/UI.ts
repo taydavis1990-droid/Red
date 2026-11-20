@@ -1,6 +1,7 @@
 import type { Creature } from '../creatures/Creature';
 import { isGraphicsQuality, type GraphicsQuality } from '../core/GraphicsConfig';
 import { RACE_ATTRIBUTES, type CharacterData, type GameLocation, type Race, type TowerProgression } from '../core/types';
+import { getWeaponAssetConfig } from '../player/WeaponConfig';
 
 export interface UIActions {
   start: (race: Race, name: string) => void;
@@ -12,6 +13,7 @@ export interface UIActions {
   spirit: () => void;
   camera: () => void;
   toggleInventory: () => void;
+  equipItem: (item: string) => void;
   setGraphicsQuality: (quality: GraphicsQuality) => void;
   setBlocking: (blocked: boolean) => void;
   setSprinting: (sprinting: boolean) => void;
@@ -285,6 +287,11 @@ export class UI {
       case 'inventory':
         this.toggleInventory();
         break;
+      case 'equip-weapon': {
+        const item = target.closest<HTMLButtonElement>('[data-item]')?.dataset.item;
+        if (item) this.actions.equipItem(item);
+        break;
+      }
       case 'close-inventory':
       case 'close-panel':
         this.closePanel();
@@ -551,15 +558,23 @@ export class UI {
     const itemList = (items: string[], emptyText: string, equipped: string[] = [], rowLabel = 'ITEM'): string => items.length
       ? `<div class="panel-list">${items.map((item) => `<div class="panel-list-row"><span class="panel-item-icon" aria-hidden="true">◇</span><span>${this.escape(item)}</span><small>${equipped.includes(item) ? 'EQUIPPED' : rowLabel}</small></div>`).join('')}</div>`
       : `<p class="panel-empty">${emptyText}</p>`;
+    const weaponItems = character.inventory.filter((item) => item === 'Worn sword' || getWeaponAssetConfig(item));
     const content: Record<GamePanelName, string> = {
       inventory: `
         <div class="panel-intro"><span>THE WAYFARER'S PACK</span><p>Items gathered on your journey through the valley.</p></div>
         ${itemList(character.inventory, 'Your pack is empty.', character.equipment)}
       `,
       equipment: `
-        <div class="panel-intro"><span>WORN AND READY</span><p>Equipment currently carried by ${this.escape(character.name)}.</p></div>
-        ${itemList(character.equipment, 'No equipment is worn.', character.equipment)}
-        <p class="panel-note">Equipment management is not available in this chapter.</p>
+        <div class="panel-intro"><span>WORN AND READY</span><p>Choose the weapon ${this.escape(character.name)} carries into combat.</p></div>
+        ${weaponItems.length ? `<div class="panel-list">${weaponItems.map((item) => `
+          <div class="panel-list-row">
+            <span class="panel-item-icon" aria-hidden="true">⚔</span>
+            <span>${this.escape(item)}</span>
+            ${character.equipment.includes(item)
+              ? '<small>EQUIPPED</small>'
+              : `<button type="button" class="panel-equip-button" data-action="equip-weapon" data-item="${this.escape(item)}">EQUIP</button>`}
+          </div>`).join('')}</div>` : '<p class="panel-empty">No weapons are available to equip.</p>'}
+        <p class="panel-note">Weapon choice changes the visible hand-held model and melee damage. The current combat animation is shared.</p>
       `,
       character: `
         <div class="panel-intro"><span>LEVEL ${character.level} · ${this.escape(character.race.toUpperCase())}</span><p>${this.escape(character.name)}'s attributes and current condition.</p></div>

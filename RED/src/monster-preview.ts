@@ -93,6 +93,11 @@ for (const config of MONSTER_PREVIEW_ASSETS) {
   option.textContent = config.label;
   modelSelect.append(option);
 }
+const previewQuery = new URLSearchParams(window.location.search);
+const requestedModel = previewQuery.get('asset');
+if (requestedModel && MONSTER_PREVIEW_ASSETS.some((asset) => asset.id === requestedModel)) {
+  modelSelect.value = requestedModel;
+}
 
 function setStatus(message: string, state: 'loading' | 'success' | 'error'): void {
   status.textContent = message;
@@ -170,15 +175,17 @@ async function loadSelectedModel(): Promise<void> {
 
     const clipNames = modelReport.clips;
     if (clipNames.length) {
-      clipSelect.replaceChildren(...clipNames.map((name, index) => {
+      const requestedClip = previewQuery.get('clip');
+      const initialClip = requestedClip && clipNames.includes(requestedClip) ? requestedClip : clipNames[0];
+      clipSelect.replaceChildren(...clipNames.map((name) => {
         const option = document.createElement('option');
         option.value = name;
         option.textContent = name;
-        if (index === 0) option.selected = true;
+        if (name === initialClip) option.selected = true;
         return option;
       }));
       clipSelect.disabled = false;
-      rig.playClip(clipNames[0]);
+      if (!rig.playClip(initialClip)) throw new Error(`Could not play embedded clip "${initialClip}".`);
     } else {
       const option = document.createElement('option');
       option.textContent = 'No animation clips in this model';

@@ -454,7 +454,10 @@ export function createCharacterRig(race: Race): CharacterRig {
       weaponSocket.position.set(0, 0.08, 0.045);
       if (race === 'Dwarf') weaponSocket.scale.setScalar(0.7);
       hand.add(weaponSocket);
-      const grip = mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.17, 8), leather, weaponSocket, new THREE.Vector3(0, -0.03, 0));
+      const defaultWeapon = new THREE.Group();
+      defaultWeapon.name = 'DefaultWeapon';
+      weaponSocket.add(defaultWeapon);
+      const grip = mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.17, 8), leather, defaultWeapon, new THREE.Vector3(0, -0.03, 0));
       grip.rotation.z = -0.36;
       const bladeShape = new THREE.Shape();
       bladeShape.moveTo(-0.035, 0);
@@ -468,14 +471,14 @@ export function createCharacterRig(race: Race): CharacterRig {
       const blade = mesh(
         new THREE.ExtrudeGeometry(bladeShape, { depth: 0.028, bevelEnabled: true, bevelSegments: 2, steps: 1, bevelSize: 0.012, bevelThickness: 0.012 }),
         armor,
-        weaponSocket,
+        defaultWeapon,
         new THREE.Vector3(0, -0.1, -0.014),
       );
       blade.rotation.z = -0.36;
-      mesh(new THREE.BoxGeometry(0.22, 0.045, 0.065), trim, weaponSocket, new THREE.Vector3(0, -0.11, 0)).rotation.z = -0.36;
-      const fuller = mesh(new THREE.BoxGeometry(0.018, 0.48, 0.008), trim, weaponSocket, new THREE.Vector3(0, -0.4, 0.032));
+      mesh(new THREE.BoxGeometry(0.22, 0.045, 0.065), trim, defaultWeapon, new THREE.Vector3(0, -0.11, 0)).rotation.z = -0.36;
+      const fuller = mesh(new THREE.BoxGeometry(0.018, 0.48, 0.008), trim, defaultWeapon, new THREE.Vector3(0, -0.4, 0.032));
       fuller.rotation.z = -0.36;
-      mesh(new THREE.SphereGeometry(0.045, 8, 8), trim, weaponSocket, new THREE.Vector3(0, 0.065, 0));
+      mesh(new THREE.SphereGeometry(0.045, 8, 8), trim, defaultWeapon, new THREE.Vector3(0, 0.065, 0));
     } else {
       const cuff = mesh(new THREE.TorusGeometry(0.045, 0.009, 6, 14), trim, hand, new THREE.Vector3(0, -0.08, 0.035));
       cuff.rotation.x = Math.PI / 2;

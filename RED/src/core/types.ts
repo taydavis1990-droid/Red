@@ -79,7 +79,7 @@ export function createCharacter(race: Race, name: string): CharacterData {
     level: 1,
     xp: 0,
     attributes: { ...RACE_ATTRIBUTES[race] },
-    inventory: ['Worn sword', 'Valley herb'],
+    inventory: ['Worn sword', 'Broadsword', 'Dagger', 'Valley herb'],
     equipment: ['Worn sword'],
     companions: 0,
     discoveredLocations: ['Forgotten Valley'],
